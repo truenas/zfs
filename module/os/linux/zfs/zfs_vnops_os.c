@@ -341,7 +341,7 @@ update_pages(znode_t *zp, int64_t start, int len, objset_t *os)
 
 			pb = kmap(pp);
 			(void) dmu_read(os, zp->z_id, start + off, nbytes,
-			    pb + off, DMU_READ_PREFETCH);
+			    pb + off, DMU_CTX_FLAG_PREFETCH);
 			kunmap(pp);
 
 			if (mapping_writably_mapped(mp))
@@ -560,7 +560,7 @@ zfs_get_data(void *arg, lr_write_t *lr, char *buf, struct lwb *lwb, zio_t *zio)
 			error = SET_ERROR(ENOENT);
 		} else {
 			error = dmu_read(os, object, offset, size, buf,
-			    DMU_READ_NO_PREFETCH);
+			    /* flags */ 0);
 		}
 		ASSERT(error == 0 || error == ENOENT);
 	} else { /* indirect write */
@@ -593,7 +593,7 @@ zfs_get_data(void *arg, lr_write_t *lr, char *buf, struct lwb *lwb, zio_t *zio)
 #endif
 		if (error == 0)
 			error = dmu_buf_hold(os, object, offset, zgd, &db,
-			    DMU_READ_NO_PREFETCH);
+			    /* flags */ 0);
 
 		if (error == 0) {
 			blkptr_t *bp = &lr->lr_blkptr;
@@ -4019,7 +4019,7 @@ zfs_fillpage(struct inode *ip, struct page *pl[], int nr_pages)
 		cur_pp = pl[page_idx++];
 		va = kmap(cur_pp);
 		err = dmu_read(os, zp->z_id, io_off, PAGESIZE, va,
-		    DMU_READ_PREFETCH);
+		    DMU_CTX_FLAG_PREFETCH);
 		kunmap(cur_pp);
 		if (err) {
 			/* convert checksum errors into IO errors */
