@@ -4,9 +4,12 @@ export DH_VERBOSE = 1
 %:
 	dh $@
 
-src!= dpkg --get-selections | awk '/^linux-headers-.*-common/ { print $$1 }'
-obj!= dpkg --get-selections | awk '/^linux-headers-.*-amd64/ { print $$1 }'
-krn!= dpkg --get-selections | awk '/^linux-image-.*-amd64/ { print $$1 }'
+debarch!= dpkg --print-architecture
+# Prefer the TrueNAS kernel image but fall back to the generic image.
+krn!= apt info 'linux-image-truenas-$(debarch)' 'linux-image-$(debarch)' | \
+	awk '/^Depends:/ { print $$2; exit }'
+obj= $(subst image,headers,$(krn))
+src= $(subst $(debarch),common,$(obj))
 kmod= kmod-zfs-$(subst linux-image-,,$(krn))
 
 override_dh_auto_configure:
