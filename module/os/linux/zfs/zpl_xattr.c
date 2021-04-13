@@ -84,6 +84,12 @@
 #include <sys/vfs.h>
 #include <sys/zpl.h>
 
+enum xattr_permission {
+	XAPERM_DENY,
+	XAPERM_ALLOW,
+	XAPERM_COMPAT,
+};
+
 typedef struct xattr_filldir {
 	size_t size;
 	size_t offset;
@@ -91,33 +97,8 @@ typedef struct xattr_filldir {
 	struct dentry *dentry;
 } xattr_filldir_t;
 
-static const struct xattr_handler *zpl_xattr_handler(const char *);
-
-static int
-zpl_xattr_permission(xattr_filldir_t *xf, const char *name, int name_len)
-{
-	static const struct xattr_handler *handler;
-	struct dentry *d = xf->dentry;
-
-	handler = zpl_xattr_handler(name);
-	if (!handler)
-		return (0);
-
-	if (handler->list) {
-#if defined(HAVE_XATTR_LIST_SIMPLE)
-		if (!handler->list(d))
-			return (0);
-#elif defined(HAVE_XATTR_LIST_DENTRY)
-		if (!handler->list(d, NULL, 0, name, name_len, 0))
-			return (0);
-#elif defined(HAVE_XATTR_LIST_HANDLER)
-		if (!handler->list(handler, d, NULL, 0, name, name_len))
-			return (0);
-#endif
-	}
-
-	return (1);
-}
+static enum xattr_permission zpl_xattr_permission(xattr_filldir_t *,
+    const char *, int);
 
 /*
  * Determine is a given xattr name should be visible and if so copy it
@@ -126,9 +107,26 @@ zpl_xattr_permission(xattr_filldir_t *xf, const char *name, int name_len)
 static int
 zpl_xattr_filldir(xattr_filldir_t *xf, const char *name, int name_len)
 {
+	enum xattr_permission perm;
+
 	/* Check permissions using the per-namespace list xattr handler. */
-	if (!zpl_xattr_permission(xf, name, name_len))
+	perm = zpl_xattr_permission(xf, name, name_len);
+	if (perm == XAPERM_DENY)
 		return (0);
+
+	/* Prefix the name with "user." if it does not have a namespace. */
+	if (perm == XAPERM_COMPAT) {
+		if (xf->buf) {
+			if (xf->offset + XATTR_USER_PREFIX_LEN + 1 > xf->size)
+				return (-ERANGE);
+
+			memcpy(xf->buf + xf->offset, XATTR_USER_PREFIX,
+			    XATTR_USER_PREFIX_LEN);
+			xf->buf[xf->offset + XATTR_USER_PREFIX_LEN] = '\0';
+		}
+
+		xf->offset += XATTR_USER_PREFIX_LEN;
+	}
 
 	/* When xf->buf is NULL only calculate the required size. */
 	if (xf->buf) {
@@ -706,7 +704,6 @@ static int
 __zpl_xattr_user_get(struct inode *ip, const char *name,
     void *value, size_t size)
 {
-	char *xattr_name;
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
 #ifndef HAVE_XATTR_HANDLER_NAME
@@ -716,9 +713,18 @@ __zpl_xattr_user_get(struct inode *ip, const char *name,
 	if (!(ITOZSB(ip)->z_flags & ZSB_XATTR))
 		return (-EOPNOTSUPP);
 
-	xattr_name = kmem_asprintf("%s%s", XATTR_USER_PREFIX, name);
-	error = zpl_xattr_get(ip, xattr_name, value, size);
-	kmem_strfree(xattr_name);
+	/*
+	 * Try to look up the name without the namespace prefix first for
+	 * compatibility with xattrs from other platforms.  If that fails,
+	 * try again with the namespace prefix.
+	 */
+	error = zpl_xattr_get(ip, name, value, size);
+	if (error == -ENODATA) {
+		char *xattr_name;
+		xattr_name = kmem_asprintf("%s%s", XATTR_USER_PREFIX, name);
+		error = zpl_xattr_get(ip, xattr_name, value, size);
+		kmem_strfree(xattr_name);
+	}
 
 	return (error);
 }
@@ -738,9 +744,23 @@ __zpl_xattr_user_set(struct inode *ip, const char *name,
 	if (!(ITOZSB(ip)->z_flags & ZSB_XATTR))
 		return (-EOPNOTSUPP);
 
+	/*
+	 * Remove any namespaced version of the xattr so we only set the
+	 * version compatible with other platforms.
+	 *
+	 * The following flags must be handled correctly:
+	 *
+	 *   XATTR_CREATE: fail if xattr already exists
+	 *   XATTR_REPLACE: fail if xattr does not exist
+	 */
 	xattr_name = kmem_asprintf("%s%s", XATTR_USER_PREFIX, name);
-	error = zpl_xattr_set(ip, xattr_name, value, size, flags);
+	error = zpl_xattr_set(ip, xattr_name, NULL, 0, flags);
 	kmem_strfree(xattr_name);
+	if (error == -EEXIST)
+		return (error);
+	if (error == 0 && (flags & XATTR_REPLACE))
+		flags &= ~XATTR_REPLACE;
+	error = zpl_xattr_set(ip, name, value, size, flags);
 
 	return (error);
 }
@@ -1383,6 +1403,39 @@ zpl_xattr_handler(const char *name)
 #endif /* CONFIG_FS_POSIX_ACL */
 
 	return (NULL);
+}
+
+static enum xattr_permission
+zpl_xattr_permission(xattr_filldir_t *xf, const char *name, int name_len)
+{
+	const struct xattr_handler *handler;
+	struct dentry *d = xf->dentry;
+	enum xattr_permission perm = XAPERM_ALLOW;
+
+	handler = zpl_xattr_handler(name);
+	if (handler == NULL) {
+		/*
+		 * Anything that doesn't match a known namespace gets put in the
+		 * user namespace for compatibility with other platforms.
+		 */
+		perm = XAPERM_COMPAT;
+		handler = &zpl_xattr_user_handler;
+	}
+
+	if (handler->list) {
+#if defined(HAVE_XATTR_LIST_SIMPLE)
+		if (!handler->list(d))
+			return (XAPERM_DENY);
+#elif defined(HAVE_XATTR_LIST_DENTRY)
+		if (!handler->list(d, NULL, 0, name, name_len, 0))
+			return (XAPERM_DENY);
+#elif defined(HAVE_XATTR_LIST_HANDLER)
+		if (!handler->list(handler, d, NULL, 0, name, name_len))
+			return (XAPERM_DENY);
+#endif
+	}
+
+	return (perm);
 }
 
 #if !defined(HAVE_POSIX_ACL_RELEASE) || defined(HAVE_POSIX_ACL_RELEASE_GPL_ONLY)
