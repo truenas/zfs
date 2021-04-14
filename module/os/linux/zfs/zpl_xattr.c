@@ -710,6 +710,8 @@ __zpl_xattr_user_get(struct inode *ip, const char *name,
 	if (strcmp(name, "") == 0)
 		return (-EINVAL);
 #endif
+	if (ZFS_XA_NS_PREFIX_FORBIDDEN(name))
+		return (-EINVAL);
 	if (!(ITOZSB(ip)->z_flags & ZSB_XATTR))
 		return (-EOPNOTSUPP);
 
@@ -741,6 +743,8 @@ __zpl_xattr_user_set(struct inode *ip, const char *name,
 	if (strcmp(name, "") == 0)
 		return (-EINVAL);
 #endif
+	if (ZFS_XA_NS_PREFIX_FORBIDDEN(name))
+		return (-EINVAL);
 	if (!(ITOZSB(ip)->z_flags & ZSB_XATTR))
 		return (-EOPNOTSUPP);
 
@@ -1414,6 +1418,9 @@ zpl_xattr_permission(xattr_filldir_t *xf, const char *name, int name_len)
 
 	handler = zpl_xattr_handler(name);
 	if (handler == NULL) {
+		/* Do not expose FreeBSD system namespace xattrs. */
+		if (ZFS_XA_NS_PREFIX_MATCH(FREEBSD, name))
+			return (XAPERM_DENY);
 		/*
 		 * Anything that doesn't match a known namespace gets put in the
 		 * user namespace for compatibility with other platforms.

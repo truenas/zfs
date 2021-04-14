@@ -5238,8 +5238,8 @@ zfs_create_attrname(int attrnamespace, const char *name, char *attrname,
 	/* We don't allow '/' character in attribute name. */
 	if (strchr(name, '/') != NULL)
 		return (EINVAL);
-	/* We don't allow attribute names that start with "freebsd:" string. */
-	if (strncmp(name, "freebsd:", 8) == 0)
+	/* We don't allow attribute names that start with a namespace prefix. */
+	if (ZFS_XA_NS_PREFIX_FORBIDDEN(name))
 		return (EINVAL);
 
 	bzero(attrname, size);
@@ -5606,7 +5606,7 @@ zfs_listextattr(struct vop_listextattr_args *ap)
 			if (dp->d_type != DT_REG && dp->d_type != DT_UNKNOWN)
 				continue;
 			if (plen == 0 &&
-			    strncmp(dp->d_name, "freebsd:", 8) == 0)
+			    ZFS_XA_NS_PREFIX_FORBIDDEN(dp->d_name))
 				continue;
 			else if (strncmp(dp->d_name, attrprefix, plen) != 0)
 				continue;
