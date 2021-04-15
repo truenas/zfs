@@ -704,6 +704,7 @@ static int
 __zpl_xattr_user_get(struct inode *ip, const char *name,
     void *value, size_t size)
 {
+	boolean_t compat = !!(ITOZSB(ip)->z_flags & ZSB_XATTR_COMPAT);
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
 #ifndef HAVE_XATTR_HANDLER_NAME
@@ -720,8 +721,9 @@ __zpl_xattr_user_get(struct inode *ip, const char *name,
 	 * compatibility with xattrs from other platforms.  If that fails,
 	 * try again with the namespace prefix.
 	 */
-	error = zpl_xattr_get(ip, name, value, size);
-	if (error == -ENODATA) {
+	if (compat)
+		error = zpl_xattr_get(ip, name, value, size);
+	if (!compat || error == -ENODATA) {
 		char *xattr_name;
 		xattr_name = kmem_asprintf("%s%s", XATTR_USER_PREFIX, name);
 		error = zpl_xattr_get(ip, xattr_name, value, size);
@@ -737,6 +739,7 @@ __zpl_xattr_user_set(struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
 	char *xattr_name;
+	boolean_t compat = !!(ITOZSB(ip)->z_flags & ZSB_XATTR_COMPAT);
 	int error;
 	/* xattr_resolve_name will do this for us if this is defined */
 #ifndef HAVE_XATTR_HANDLER_NAME
@@ -758,13 +761,20 @@ __zpl_xattr_user_set(struct inode *ip, const char *name,
 	 *   XATTR_REPLACE: fail if xattr does not exist
 	 */
 	xattr_name = kmem_asprintf("%s%s", XATTR_USER_PREFIX, name);
-	error = zpl_xattr_set(ip, xattr_name, NULL, 0, flags);
+	if (compat)
+		error = zpl_xattr_set(ip, xattr_name, NULL, 0, flags);
+	else
+		error = zpl_xattr_set(ip, xattr_name, value, size, flags);
 	kmem_strfree(xattr_name);
-	if (error == -EEXIST)
+
+	if (!compat || error == -EEXIST)
 		return (error);
 	if (error == 0 && (flags & XATTR_REPLACE))
 		flags &= ~XATTR_REPLACE;
 	error = zpl_xattr_set(ip, name, value, size, flags);
+
+	dsl_dataset_t *ds = dmu_objset_ds(ITOZSB(ip)->z_os);
+	ds->ds_feature_activation[SPA_FEATURE_XATTR_COMPAT] = (void *)B_TRUE;
 
 	return (error);
 }
@@ -1414,10 +1424,13 @@ zpl_xattr_permission(xattr_filldir_t *xf, const char *name, int name_len)
 {
 	const struct xattr_handler *handler;
 	struct dentry *d = xf->dentry;
+	boolean_t compat = !!(ITOZSB(d->d_inode)->z_flags & ZSB_XATTR_COMPAT);
 	enum xattr_permission perm = XAPERM_ALLOW;
 
 	handler = zpl_xattr_handler(name);
 	if (handler == NULL) {
+		if (!compat)
+			return (XAPERM_DENY);
 		/* Do not expose FreeBSD system namespace xattrs. */
 		if (ZFS_XA_NS_PREFIX_MATCH(FREEBSD, name))
 			return (XAPERM_DENY);

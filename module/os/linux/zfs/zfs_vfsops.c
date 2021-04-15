@@ -58,6 +58,7 @@
 #include <sys/dsl_dir.h>
 #include <sys/spa_boot.h>
 #include <sys/objlist.h>
+#include <sys/zfeature.h>
 #include <sys/zpl.h>
 #include <linux/vfs_compat.h>
 #include "zfs_comutil.h"
@@ -635,6 +636,12 @@ zfsvfs_init(zfsvfs_t *zfsvfs, objset_t *os)
 	zfsvfs->z_max_blksz = SPA_OLD_MAXBLOCKSIZE;
 	zfsvfs->z_show_ctldir = ZFS_SNAPDIR_VISIBLE;
 	zfsvfs->z_os = os;
+
+	if (spa_feature_is_enabled(dmu_objset_spa(os),
+	    SPA_FEATURE_XATTR_COMPAT))
+		zfsvfs->z_flags |= ZSB_XATTR_COMPAT;
+	else
+		zfsvfs->z_flags &= ~ZSB_XATTR_COMPAT;
 
 	error = zfs_get_zplprop(os, ZFS_PROP_VERSION, &zfsvfs->z_version);
 	if (error != 0)
