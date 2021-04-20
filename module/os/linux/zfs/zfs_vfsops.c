@@ -348,6 +348,29 @@ xattr_changed_cb(void *arg, uint64_t newval)
 }
 
 static void
+xattr_compat_changed_cb(void *arg, uint64_t newval)
+{
+	zfsvfs_t *zfsvfs = arg;
+
+	/*
+	 *  Force the old incompatible Linux behavior
+	 *  if feature@xattr_compat is disabled.
+	 */
+	if (!spa_feature_is_enabled(dmu_objset_spa(zfsvfs->z_os),
+	    SPA_FEATURE_XATTR_COMPAT))
+		newval = ZFS_XATTR_COMPAT_LINUX;
+
+	switch (newval) {
+	case ZFS_XATTR_COMPAT_ALL:
+		zfsvfs->z_flags |= ZSB_XATTR_COMPAT;
+		break;
+	case ZFS_XATTR_COMPAT_LINUX:
+		zfsvfs->z_flags &= ~ZSB_XATTR_COMPAT;
+		break;
+	}
+}
+
+static void
 acltype_changed_cb(void *arg, uint64_t newval)
 {
 	zfsvfs_t *zfsvfs = arg;
@@ -494,6 +517,9 @@ zfs_register_callbacks(vfs_t *vfsp)
 	error = error ? error : dsl_prop_register(ds,
 	    zfs_prop_to_name(ZFS_PROP_XATTR), xattr_changed_cb, zfsvfs);
 	error = error ? error : dsl_prop_register(ds,
+	    zfs_prop_to_name(ZFS_PROP_XATTR_COMPAT), xattr_compat_changed_cb,
+	    zfsvfs);
+	error = error ? error : dsl_prop_register(ds,
 	    zfs_prop_to_name(ZFS_PROP_RECORDSIZE), blksz_changed_cb, zfsvfs);
 	error = error ? error : dsl_prop_register(ds,
 	    zfs_prop_to_name(ZFS_PROP_READONLY), readonly_changed_cb, zfsvfs);
@@ -636,12 +662,6 @@ zfsvfs_init(zfsvfs_t *zfsvfs, objset_t *os)
 	zfsvfs->z_max_blksz = SPA_OLD_MAXBLOCKSIZE;
 	zfsvfs->z_show_ctldir = ZFS_SNAPDIR_VISIBLE;
 	zfsvfs->z_os = os;
-
-	if (spa_feature_is_enabled(dmu_objset_spa(os),
-	    SPA_FEATURE_XATTR_COMPAT))
-		zfsvfs->z_flags |= ZSB_XATTR_COMPAT;
-	else
-		zfsvfs->z_flags &= ~ZSB_XATTR_COMPAT;
 
 	error = zfs_get_zplprop(os, ZFS_PROP_VERSION, &zfsvfs->z_version);
 	if (error != 0)
@@ -1517,6 +1537,10 @@ zfs_domount(struct super_block *sb, zfs_mnt_t *zm, int silent)
 		    "xattr", &pval, NULL)))
 			goto out;
 		xattr_changed_cb(zfsvfs, pval);
+		if ((error = dsl_prop_get_integer(osname,
+		    "xattr_compat", &pval, NULL)))
+			goto out;
+		xattr_compat_changed_cb(zfsvfs, pval);
 		if ((error = dsl_prop_get_integer(osname,
 		    "acltype", &pval, NULL)))
 			goto out;
