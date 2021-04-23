@@ -56,6 +56,7 @@
 #include <sys/sa_impl.h>
 #include <sys/policy.h>
 #include <sys/atomic.h>
+#include <sys/zfeature.h>
 #include <sys/zfs_ioctl.h>
 #include <sys/zfs_ctldir.h>
 #include <sys/zfs_fuid.h>
@@ -479,6 +480,31 @@ xattr_changed_cb(void *arg, uint64_t newval)
 }
 
 static void
+xattr_compat_changed_cb(void *arg, uint64_t newval)
+{
+	zfsvfs_t *zfsvfs = arg;
+
+	/*
+	 *  Force the old cross-platform compatible behavior if
+	 *  feature@xattr_compat is disabled.  This contrasts with
+	 *  Linux where the behavior prior to feature@xattr_compat
+	 *  was to use the incompatible Linux-only xattr format.
+	 */
+	if (!spa_feature_is_enabled(dmu_objset_spa(zfsvfs->z_os),
+	    SPA_FEATURE_XATTR_COMPAT))
+		newval = ZFS_XATTR_COMPAT_ALL;
+
+	switch (newval) {
+	case ZFS_XATTR_COMPAT_ALL:
+		zfsvfs->z_flags |= ZSB_XATTR_COMPAT;
+		break;
+	case ZFS_XATTR_COMPAT_LINUX:
+		zfsvfs->z_flags &= ~ZSB_XATTR_COMPAT;
+		break;
+	}
+}
+
+static void
 blksz_changed_cb(void *arg, uint64_t newval)
 {
 	zfsvfs_t *zfsvfs = arg;
@@ -722,6 +748,9 @@ zfs_register_callbacks(vfs_t *vfsp)
 	error = error ? error : dsl_prop_register(ds,
 	    zfs_prop_to_name(ZFS_PROP_XATTR), xattr_changed_cb, zfsvfs);
 	error = error ? error : dsl_prop_register(ds,
+	    zfs_prop_to_name(ZFS_PROP_XATTR_COMPAT), xattr_compat_changed_cb,
+	    zfsvfs);
+	error = error ? error : dsl_prop_register(ds,
 	    zfs_prop_to_name(ZFS_PROP_RECORDSIZE), blksz_changed_cb, zfsvfs);
 	error = error ? error : dsl_prop_register(ds,
 	    zfs_prop_to_name(ZFS_PROP_READONLY), readonly_changed_cb, zfsvfs);
@@ -831,6 +860,10 @@ zfsvfs_init(zfsvfs_t *zfsvfs, objset_t *os)
 		    &sa_obj);
 		if (error != 0)
 			return (error);
+
+		error = zfs_get_zplprop(os, ZFS_PROP_XATTR, &val);
+		if ((error == 0) && (val == ZFS_XATTR_SA))
+			zfsvfs->z_xattr_sa = B_TRUE;
 	}
 
 	error = sa_setup(os, sa_obj, zfs_attr_table, ZPL_END,
@@ -1233,6 +1266,10 @@ zfs_domount(vfs_t *vfsp, char *osname)
 		    "xattr", &pval, NULL)))
 			goto out;
 		xattr_changed_cb(zfsvfs, pval);
+		if ((error = dsl_prop_get_integer(osname,
+		    "xattr_compat", &pval, NULL)))
+			goto out;
+		xattr_compat_changed_cb(zfsvfs, pval);
 		if ((error = dsl_prop_get_integer(osname,
 		    "acltype", &pval, NULL)))
 			goto out;

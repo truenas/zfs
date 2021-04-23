@@ -5220,43 +5220,54 @@ zfs_freebsd_pathconf(struct vop_pathconf_args *ap)
 	}
 }
 
-/*
- * FreeBSD's extended attributes namespace defines file name prefix for ZFS'
- * extended attribute name:
- *
- *	NAMESPACE	PREFIX
- *	system		freebsd:system:
- *	user		(none, can be used to access ZFS fsattr(5) attributes
- *			created on Solaris)
- */
 static int
-zfs_create_attrname(int attrnamespace, const char *name, char *attrname,
-    size_t size)
+zfs_check_attrname(const char *name)
 {
-	const char *namespace, *prefix, *suffix;
-
 	/* We don't allow '/' character in attribute name. */
 	if (strchr(name, '/') != NULL)
 		return (EINVAL);
 	/* We don't allow attribute names that start with a namespace prefix. */
 	if (ZFS_XA_NS_PREFIX_FORBIDDEN(name))
 		return (EINVAL);
+	return (0);
+}
+
+/*
+ * FreeBSD's extended attributes namespace defines file name prefix for ZFS'
+ * extended attribute name:
+ *
+ *	NAMESPACE	XATTR_COMPAT	PREFIX
+ *	system		*		freebsd:system:
+ *	user		all		(none, can be used to access ZFS
+ *					fsattr(5) attributes created on Solaris)
+ *	user		linux		user.
+ */
+static int
+zfs_create_attrname(int attrnamespace, const char *name, char *attrname,
+    size_t size, boolean_t xattr_compat)
+{
+	const char *namespace, *prefix, *suffix;
 
 	bzero(attrname, size);
 
 	switch (attrnamespace) {
 	case EXTATTR_NAMESPACE_USER:
-#if 0
-		prefix = "freebsd:";
-		namespace = EXTATTR_NAMESPACE_USER_STRING;
-		suffix = ":";
-#else
-		/*
-		 * This is the default namespace by which we can access all
-		 * attributes created on Solaris.
-		 */
-		prefix = namespace = suffix = "";
-#endif
+		if (xattr_compat) {
+			/*
+			 * This is the default namespace by which we can access
+			 * all attributes created on Solaris.
+			 */
+			prefix = namespace = suffix = "";
+		} else {
+			/*
+			 * This is compatible with the user namespace encoding
+			 * on Linux prior to feature@xattr_compat, but nothing
+			 * else.
+			 */
+			prefix = "";
+			namespace = "user";
+			suffix = ".";
+		}
 		break;
 	case EXTATTR_NAMESPACE_SYSTEM:
 		prefix = "freebsd:";
@@ -5308,9 +5319,6 @@ zfs_getextattr_dir(struct vop_getextattr_args *ap, const char *attrname)
 	vp = nd.ni_vp;
 	NDFREE(&nd, NDF_ONLY_PNBUF);
 	if (error != 0) {
-		if (error == ENOENT) {
-			error = SET_ERROR(ENOATTR);
-		}
 		return (error);
 	}
 
@@ -5363,6 +5371,29 @@ zfs_getextattr_sa(struct vop_getextattr_args *ap, const char *attrname)
 	return (error);
 }
 
+static int
+zfs_getextattr_impl(struct vop_getextattr_args *ap, boolean_t compat)
+{
+	znode_t *zp = VTOZ(ap->a_vp);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	char attrname[255];
+	int error;
+
+	error = zfs_create_attrname(ap->a_attrnamespace, ap->a_name, attrname,
+	    sizeof (attrname), compat);
+	if (error != 0) {
+		return (error);
+	}
+	error = ENOENT;
+	if (zfsvfs->z_use_sa && zp->z_is_sa) {
+		error = zfs_getextattr_sa(ap, attrname);
+	}
+	if (error == ENOENT) {
+		error = zfs_getextattr_dir(ap, attrname);
+	}
+	return (error);
+}
+
 /*
  * Vnode operation to retrieve a named extended attribute.
  */
@@ -5371,7 +5402,6 @@ zfs_getextattr(struct vop_getextattr_args *ap)
 {
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
-	char attrname[255];
 	int error;
 
 	/*
@@ -5387,8 +5417,7 @@ zfs_getextattr(struct vop_getextattr_args *ap)
 		return (error);
 	}
 
-	error = zfs_create_attrname(ap->a_attrnamespace, ap->a_name, attrname,
-	    sizeof (attrname));
+	error = zfs_check_attrname(ap->a_name);
 	if (error != 0) {
 		return (error);
 	}
@@ -5396,16 +5425,20 @@ zfs_getextattr(struct vop_getextattr_args *ap)
 	ZFS_ENTER(zfsvfs);
 	ZFS_VERIFY_ZP(zp)
 	rw_enter(&zp->z_xattr_lock, RW_READER);
-	error = ENOENT;
-	if (zfsvfs->z_use_sa && zp->z_is_sa) {
-		error = zfs_getextattr_sa(ap, attrname);
-	}
-	if (error == ENOENT) {
-		error = zfs_getextattr_dir(ap, attrname);
+
+	boolean_t compat = !!(zfsvfs->z_flags & ZSB_XATTR_COMPAT);
+	error = zfs_getextattr_impl(ap, compat);
+	if (error == ENOENT && ap->a_attrnamespace == EXTATTR_NAMESPACE_USER) {
+		/*
+		 * Fall back to the alternate namespace format if we failed to
+		 * find a user xattr.
+		 */
+		error = zfs_getextattr_impl(ap, !compat);
 	}
 	if (error == ENOENT) {
 		error = SET_ERROR(ENOATTR);
 	}
+
 	rw_exit(&zp->z_xattr_lock);
 	ZFS_EXIT(zfsvfs);
 	return (error);
@@ -5441,9 +5474,6 @@ zfs_deleteextattr_dir(struct vop_deleteextattr_args *ap, const char *attrname)
 	vp = nd.ni_vp;
 	if (error != 0) {
 		NDFREE(&nd, NDF_ONLY_PNBUF);
-		if (error == ENOENT) {
-			error = ENOATTR;
-		}
 		return (error);
 	}
 
@@ -5491,39 +5521,20 @@ zfs_deleteextattr_sa(struct vop_deleteextattr_args *ap, const char *attrname)
 	return (error);
 }
 
-/*
- * Vnode operation to remove a named attribute.
- */
 static int
-zfs_deleteextattr(struct vop_deleteextattr_args *ap)
+zfs_deleteextattr_impl(struct vop_deleteextattr_args *ap, boolean_t compat)
 {
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	char attrname[255];
 	int error;
 
-	/*
-	 * If the xattr property is off, refuse the request.
-	 */
-	if (!(zfsvfs->z_flags & ZSB_XATTR)) {
-		return (SET_ERROR(EOPNOTSUPP));
-	}
-
-	error = extattr_check_cred(ap->a_vp, ap->a_attrnamespace,
-	    ap->a_cred, ap->a_td, VWRITE);
-	if (error != 0) {
-		return (error);
-	}
-
 	error = zfs_create_attrname(ap->a_attrnamespace, ap->a_name, attrname,
-	    sizeof (attrname));
+	    sizeof (attrname), compat);
 	if (error != 0) {
 		return (error);
 	}
 
-	ZFS_ENTER(zfsvfs);
-	ZFS_VERIFY_ZP(zp);
-	rw_enter(&zp->z_xattr_lock, RW_WRITER);
 	size_t size = 0;
 	struct vop_getextattr_args gap = {
 		.a_vp = ap->a_vp,
@@ -5544,9 +5555,51 @@ zfs_deleteextattr(struct vop_deleteextattr_args *ap)
 			error = zfs_deleteextattr_dir(ap, attrname);
 		}
 	}
+	return (error);
+}
+
+/*
+ * Vnode operation to remove a named attribute.
+ */
+static int
+zfs_deleteextattr(struct vop_deleteextattr_args *ap)
+{
+	znode_t *zp = VTOZ(ap->a_vp);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	int error;
+
+	/*
+	 * If the xattr property is off, refuse the request.
+	 */
+	if (!(zfsvfs->z_flags & ZSB_XATTR)) {
+		return (SET_ERROR(EOPNOTSUPP));
+	}
+
+	error = extattr_check_cred(ap->a_vp, ap->a_attrnamespace,
+	    ap->a_cred, ap->a_td, VWRITE);
+	if (error != 0) {
+		return (error);
+	}
+
+	error = zfs_check_attrname(ap->a_name);
+	if (error != 0) {
+		return (error);
+	}
+
+	ZFS_ENTER(zfsvfs);
+	ZFS_VERIFY_ZP(zp);
+	rw_enter(&zp->z_xattr_lock, RW_WRITER);
+
+	boolean_t compat = !!(zfsvfs->z_flags & ZSB_XATTR_COMPAT);
+	error = zfs_deleteextattr_impl(ap, compat);
+	if (error == ENOENT && !compat &&
+	    ap->a_attrnamespace == EXTATTR_NAMESPACE_USER) {
+		error = zfs_deleteextattr_impl(ap, !compat);
+	}
 	if (error == ENOENT) {
 		error = SET_ERROR(ENOATTR);
 	}
+
 	rw_exit(&zp->z_xattr_lock);
 	ZFS_EXIT(zfsvfs);
 	return (error);
@@ -5649,6 +5702,59 @@ zfs_setextattr_sa(struct vop_setextattr_args *ap, const char *attrname)
 	return (error);
 }
 
+static int
+zfs_setextattr_impl(struct vop_setextattr_args *ap, boolean_t compat)
+{
+	znode_t *zp = VTOZ(ap->a_vp);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	char attrname[255];
+	int error;
+
+	error = zfs_create_attrname(ap->a_attrnamespace, ap->a_name, attrname,
+	    sizeof (attrname), compat);
+	if (error != 0) {
+		return (error);
+	}
+
+	struct vop_deleteextattr_args dap = {
+		.a_vp = ap->a_vp,
+		.a_cred = ap->a_cred,
+		.a_td = ap->a_td,
+	};
+	error = ENOENT;
+	if (zfsvfs->z_use_sa && zp->z_is_sa && zfsvfs->z_xattr_sa) {
+		error = zfs_setextattr_sa(ap, attrname);
+		if (error == 0) {
+			/*
+			 * Successfully put into SA, we need to clear the one
+			 * in dir if present.
+			 */
+			zfs_deleteextattr_dir(&dap, attrname);
+		}
+	}
+	if (error) {
+		error = zfs_setextattr_dir(ap, attrname);
+		if (error == 0) {
+			/*
+			 * Successfully put into dir, we need to clear the one
+			 * in SA if present.
+			 */
+			zfs_deleteextattr_sa(&dap, attrname);
+		}
+	}
+	if (error == 0 && ap->a_attrnamespace == EXTATTR_NAMESPACE_USER) {
+		/*
+		 * Also clear all versions of the alternate compat name.
+		 */
+		if (zfs_create_attrname(ap->a_attrnamespace, ap->a_name,
+		    attrname, sizeof (attrname), !compat) == 0) {
+			zfs_deleteextattr_sa(&dap, attrname);
+			zfs_deleteextattr_dir(&dap, attrname);
+		}
+	}
+	return (error);
+}
+
 /*
  * Vnode operation to set a named attribute.
  */
@@ -5657,7 +5763,6 @@ zfs_setextattr(struct vop_setextattr_args *ap)
 {
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
-	char attrname[255];
 	int error;
 
 	/*
@@ -5672,8 +5777,8 @@ zfs_setextattr(struct vop_setextattr_args *ap)
 	if (error != 0) {
 		return (error);
 	}
-	error = zfs_create_attrname(ap->a_attrnamespace, ap->a_name, attrname,
-	    sizeof (attrname));
+
+	error = zfs_check_attrname(ap->a_name);
 	if (error != 0) {
 		return (error);
 	}
@@ -5681,37 +5786,10 @@ zfs_setextattr(struct vop_setextattr_args *ap)
 	ZFS_ENTER(zfsvfs);
 	ZFS_VERIFY_ZP(zp);
 	rw_enter(&zp->z_xattr_lock, RW_WRITER);
-	error = ENOENT;
-	if (zfsvfs->z_use_sa && zp->z_is_sa && zfsvfs->z_xattr_sa) {
-		error = zfs_setextattr_sa(ap, attrname);
-		if (error == 0) {
-			/*
-			 * Successfully put into SA, we need to clear the one
-			 * in dir if present.
-			 */
-			struct vop_deleteextattr_args dap = {
-				.a_vp = ap->a_vp,
-				.a_cred = ap->a_cred,
-				.a_td = ap->a_td,
-			};
 
-			zfs_deleteextattr_dir(&dap, attrname);
-		}
-	}
-	if (error) {
-		error = zfs_setextattr_dir(ap, attrname);
-		if (error == 0) {
-			/*
-			 * Successfully put into dir, we need to clear the one
-			 * in SA if present.
-			 */
-			struct vop_deleteextattr_args dap = {
-				.a_vp = ap->a_vp,
-			};
+	boolean_t compat = !!(zfsvfs->z_flags & ZSB_XATTR_COMPAT);
+	error = zfs_setextattr_impl(ap, compat);
 
-			zfs_deleteextattr_sa(&dap, attrname);
-		}
-	}
 	rw_exit(&zp->z_xattr_lock);
 	ZFS_EXIT(zfsvfs);
 	return (error);
@@ -5742,9 +5820,6 @@ zfs_listextattr_dir(struct vop_listextattr_args *ap, const char *attrprefix)
 
 	plen = strlen(attrprefix);
 	sizep = ap->a_size;
-	if (sizep != NULL) {
-		*sizep = 0;
-	}
 
 	error = zfs_lookup(ap->a_vp, NULL, &xvp, NULL, 0, ap->a_cred, td,
 	    LOOKUP_XATTR, B_FALSE);
@@ -5835,9 +5910,6 @@ zfs_listextattr_sa(struct vop_listextattr_args *ap, const char *attrprefix)
 
 	plen = strlen(attrprefix);
 	sizep = ap->a_size;
-	if (sizep != NULL) {
-		*sizep = 0;
-	}
 
 	mutex_enter(&zp->z_lock);
 	if (zp->z_xattr_cached == NULL) {
@@ -5882,6 +5954,29 @@ zfs_listextattr_sa(struct vop_listextattr_args *ap, const char *attrprefix)
 	return (error);
 }
 
+static int
+zfs_listextattr_impl(struct vop_listextattr_args *ap, boolean_t compat)
+{
+	znode_t *zp = VTOZ(ap->a_vp);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	char attrprefix[16];
+	int error;
+
+	error = zfs_create_attrname(ap->a_attrnamespace, "", attrprefix,
+	    sizeof (attrprefix), compat);
+	if (error != 0) {
+		return (error);
+	}
+
+	if (zfsvfs->z_use_sa && zp->z_is_sa) {
+		error = zfs_listextattr_sa(ap, attrprefix);
+	}
+	if (error == 0) {
+		error = zfs_listextattr_dir(ap, attrprefix);
+	}
+	return (error);
+}
+
 /*
  * Vnode operation to retrieve extended attributes on a vnode.
  */
@@ -5890,8 +5985,12 @@ zfs_listextattr(struct vop_listextattr_args *ap)
 {
 	znode_t *zp = VTOZ(ap->a_vp);
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
-	char attrprefix[16];
 	int error;
+
+	size_t *sizep = ap->a_size;
+	if (sizep != NULL) {
+		*sizep = 0;
+	}
 
 	/*
 	 * If the xattr property is off, refuse the request.
@@ -5906,21 +6005,17 @@ zfs_listextattr(struct vop_listextattr_args *ap)
 		return (error);
 	}
 
-	error = zfs_create_attrname(ap->a_attrnamespace, "", attrprefix,
-	    sizeof (attrprefix));
-	if (error != 0) {
-		return (error);
-	}
-
 	ZFS_ENTER(zfsvfs);
 	ZFS_VERIFY_ZP(zp);
 	rw_enter(&zp->z_xattr_lock, RW_READER);
-	if (zfsvfs->z_use_sa && zp->z_is_sa) {
-		error = zfs_listextattr_sa(ap, attrprefix);
+
+	boolean_t compat = !!(zfsvfs->z_flags & ZSB_XATTR_COMPAT);
+	error = zfs_listextattr_impl(ap, compat);
+	if (error == 0 && ap->a_attrnamespace == EXTATTR_NAMESPACE_USER) {
+		/* Also list user xattrs with the alternate format. */
+		error = zfs_listextattr_impl(ap, !compat);
 	}
-	if (error == 0) {
-		error = zfs_listextattr_dir(ap, attrprefix);
-	}
+
 	rw_exit(&zp->z_xattr_lock);
 	ZFS_EXIT(zfsvfs);
 	return (error);
