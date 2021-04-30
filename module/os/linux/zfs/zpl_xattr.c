@@ -1475,7 +1475,7 @@ zpl_permission(struct inode *ip, int mask)
 
 #define	ACES_TO_SIZE(x, y)	(x + (y * ACE4SIZE))
 #define	SIZE_TO_ACES(x, y)	((y - x) / ACE4SIZE)
-#define	SIZE_IS_VALID(x, y)	((x >= ACES_TO_SIZE(y, 1)) && \
+#define	SIZE_IS_VALID(x, y)	((x >= ACES_TO_SIZE(y, 0)) && \
 				(((x - y) % ACE4SIZE) == 0))
 
 #define	ACES_TO_ACLSIZE(x)	(ACES_TO_SIZE(ACLBASE, x))
@@ -1504,67 +1504,146 @@ __zpl_xattr_nfs41acl_list(struct inode *ip, char *list, size_t list_size,
 }
 ZPL_XATTR_LIST_WRAPPER(zpl_xattr_nfs41acl_list);
 
-static boolean_t
+static int
+acep_to_nfsace4i(const ace_t *acep, nfsace4i *nacep)
+{
+	nacep->type = acep->a_type;
+	nacep->flag = acep->a_flags & NFS41_FLAGS;
+	nacep->access_mask = acep->a_access_mask;
+
+	switch (acep->a_flags & ACE_TYPE_FLAGS) {
+	case ACE_OWNER:
+		nacep->iflag |= ACEI4_SPECIAL_WHO;
+		nacep->who = ACE4_SPECIAL_OWNER;
+		break;
+
+	case ACE_GROUP|ACE_IDENTIFIER_GROUP:
+		nacep->iflag |= ACEI4_SPECIAL_WHO;
+		nacep->who = ACE4_SPECIAL_GROUP;
+		break;
+
+	case ACE_EVERYONE:
+		nacep->iflag |= ACEI4_SPECIAL_WHO;
+		nacep->who = ACE4_SPECIAL_EVERYONE;
+		break;
+
+	case ACE_IDENTIFIER_GROUP:
+	case 0:
+		nacep->who = acep->a_who;
+		break;
+
+	default:
+		dprintf("Unknown ACE_TYPE_FLAG 0x%08x\n",
+		    acep->a_flags & ACE_TYPE_FLAGS);
+		return (-EINVAL);
+	}
+
+	return (0);
+}
+
+static int
 zfsacl_to_nfsacl41i(vsecattr_t vsecp, nfsacl41i **_nacl, size_t *_acl_size)
 {
 	nfsacl41i *nacl = NULL;
 	nfsace4i *nacep = NULL;
-	int i;
+	int i, error;
 	size_t acl_size;
+	ace_t *acep = NULL;
+	acep = (ace_t *)vsecp.vsa_aclentp;
 
-	acl_size = ACES_TO_ACLSIZE(vsecp.vsa_aclcnt);
-	nacl = kmem_alloc(acl_size, KM_SLEEP);
-	nacep = (nfsace4i *)((char *)nacl + sizeof (nfsacl41i));
+	if ((vsecp.vsa_aclcnt == 1) &&
+	    ((acep->a_type == ACE_ACCESS_ALLOWED_OBJECT_ACE_TYPE) &&
+	    (acep->a_flags == ACE_OWNER) &&
+	    (acep->a_access_mask == 0) &&
+	    (acep->a_who == -1))) {
+		acl_size = ACES_TO_ACLSIZE(0);
+		nacl = kmem_alloc(acl_size, KM_SLEEP);
+		nacl->na41_aces.na41_aces_len = 0;
+		nacl->na41_flag = vsecp.vsa_aclflags;
+	} else {
+		acl_size = ACES_TO_ACLSIZE(vsecp.vsa_aclcnt);
+		nacl = kmem_alloc(acl_size, KM_SLEEP);
+		nacep = (nfsace4i *)((char *)nacl + sizeof (nfsacl41i));
+		nacl->na41_aces.na41_aces_len = vsecp.vsa_aclcnt;
+		nacl->na41_flag = vsecp.vsa_aclflags;
+		nacl->na41_aces.na41_aces_val = nacep;
+	}
 
-	nacl->na41_aces.na41_aces_len = vsecp.vsa_aclcnt;
-	nacl->na41_flag = vsecp.vsa_aclflags;
-	nacl->na41_aces.na41_aces_val = nacep;
-
-	for (i = 0; i < vsecp.vsa_aclcnt; i++) {
+	for (i = 0; i < nacl->na41_aces.na41_aces_len; i++) {
 		nfsace4i *nacep = &nacl->na41_aces.na41_aces_val[i];
-		ace_t *acep = vsecp.vsa_aclentp + (i * sizeof (ace_t));
-		nacep->type = acep->a_type;
-		nacep->flag = acep->a_flags & NFS41_FLAGS;
-		nacep->access_mask = acep->a_access_mask;
-		switch (acep->a_flags & ACE_TYPE_FLAGS) {
-		case ACE_OWNER:
-			nacep->iflag |= ACEI4_SPECIAL_WHO;
-			nacep->who = ACE4_SPECIAL_OWNER;
-			break;
-
-		case ACE_GROUP|ACE_IDENTIFIER_GROUP:
-			nacep->iflag |= ACEI4_SPECIAL_WHO;
-			nacep->who = ACE4_SPECIAL_GROUP;
-			break;
-
-		case ACE_EVERYONE:
-			nacep->iflag |= ACEI4_SPECIAL_WHO;
-			nacep->who = ACE4_SPECIAL_EVERYONE;
-			break;
-
-		case ACE_IDENTIFIER_GROUP:
-		case 0:
-			nacep->who = acep->a_who;
-			break;
-
-		default:
-			dprintf("Unknown ACE_TYPE_FLAG 0x%08x\n",
-			    acep->a_flags & ACE_TYPE_FLAGS);
+		acep = vsecp.vsa_aclentp + (i * sizeof (ace_t));
+		error = acep_to_nfsace4i(acep, nacep);
+		if (error) {
 			kmem_free(nacl, acl_size);
-			return (B_FALSE);
+			return (error);
 		}
 	}
 	*_acl_size = acl_size;
 	*_nacl = nacl;
-	return (B_TRUE);
+	return (0);
 }
 
-static boolean_t
-nfsacl41i_to_zfsacl(nfsacl41i *nacl, vsecattr_t *_vsecp)
+static int
+nfsace4i_to_acep(const nfsace4i *nacep, ace_t *acep)
 {
-	int i;
+	if (nacep == NULL) {
+		acep->a_type = ACE_ACCESS_ALLOWED_OBJECT_ACE_TYPE;
+		acep->a_flags = ACE_OWNER;
+		acep->a_access_mask = 0;
+		acep->a_who = -1;
+		return (0);
+	}
+
+	acep->a_type = nacep->type;
+	acep->a_flags = nacep->flag & NFS41_FLAGS;
+	acep->a_access_mask = nacep->access_mask;
+	if (nacep->iflag & ACEI4_SPECIAL_WHO) {
+		switch (nacep->who) {
+		case ACE4_SPECIAL_OWNER:
+			acep->a_flags |= ACE_OWNER;
+			acep->a_who = -1;
+			break;
+
+		case ACE4_SPECIAL_GROUP:
+			acep->a_flags |= (ACE_GROUP | ACE_IDENTIFIER_GROUP);
+			acep->a_who = -1;
+			break;
+
+		case ACE4_SPECIAL_EVERYONE:
+			acep->a_flags |= ACE_EVERYONE;
+			acep->a_who = -1;
+			break;
+
+		default:
+			dprintf("Unknown id 0x%08x\n", nacep->who);
+			return (-EINVAL);
+		}
+	} else {
+		acep->a_who = nacep->who;
+	}
+
+	return (0);
+}
+
+static int
+nfsacl41i_to_zfsacl(const nfsacl41i *nacl, vsecattr_t *_vsecp)
+{
+	int i, error;
 	vsecattr_t vsecp;
 
+	if (nacl->na41_aces.na41_aces_len == 0) {
+		/*
+		 * We have received a NULL DACL. SMB clients may do this during
+		 * tempfile generation. We need to allow this through. Store as
+		 * single owner ACL entry in ZFS.
+		 */
+		vsecp.vsa_aclcnt = 1;
+		vsecp.vsa_aclentsz = vsecp.vsa_aclcnt * sizeof (ace_t);
+		vsecp.vsa_mask = (VSA_ACE | VSA_ACE_ACLFLAGS);
+		vsecp.vsa_aclentp = kmem_alloc(vsecp.vsa_aclentsz, KM_SLEEP);
+		error = nfsace4i_to_acep(NULL, vsecp.vsa_aclentp);
+		return (error);
+	}
 	vsecp.vsa_aclcnt = nacl->na41_aces.na41_aces_len;
 	vsecp.vsa_aclflags = nacl->na41_flag;
 	vsecp.vsa_aclentsz = vsecp.vsa_aclcnt * sizeof (ace_t);
@@ -1574,35 +1653,7 @@ nfsacl41i_to_zfsacl(nfsacl41i *nacl, vsecattr_t *_vsecp)
 	for (i = 0; i < vsecp.vsa_aclcnt; i++) {
 		ace_t *acep = vsecp.vsa_aclentp + (i * sizeof (ace_t));
 		nfsace4i *nacep = &nacl->na41_aces.na41_aces_val[i];
-		acep->a_type = nacep->type;
-		acep->a_flags = nacep->flag & NFS41_FLAGS;
-		acep->a_access_mask = nacep->access_mask;
-		if (nacep->iflag & ACEI4_SPECIAL_WHO) {
-			switch (nacep->who) {
-			case ACE4_SPECIAL_OWNER:
-				acep->a_flags |= ACE_OWNER;
-				acep->a_who = -1;
-				break;
-
-			case ACE4_SPECIAL_GROUP:
-				acep->a_flags |= (ACE_GROUP | ACE_IDENTIFIER_GROUP);
-				acep->a_who = -1;
-				break;
-
-			case ACE4_SPECIAL_EVERYONE:
-				acep->a_flags |= ACE_EVERYONE;
-				acep->a_who = -1;
-				break;
-
-			default:
-				dprintf("Unknown id 0x%08x\n", nacep->who);
-				kmem_free(vsecp.vsa_aclentp,
-				    vsecp.vsa_aclentsz);
-				return (B_FALSE);
-			}
-		} else {
-			acep->a_who = nacep->who;
-		}
+		error = nfsace4i_to_acep(nacep, acep);
 	}
 	*_vsecp = vsecp;
 	return (B_TRUE);
@@ -1657,8 +1708,9 @@ __zpl_xattr_nfs41acl_get(struct inode *ip, const char *name,
 	ret = -zfs_getsecattr(ITOZ(ip), &vsecp, fl, cr);
 	crfree(cr);
 
-	if (ret)
+	if (ret) {
 		return (ret);
+	}
 
 	if (vsecp.vsa_aclcnt == 0) {
 		ret = -ENODATA;
@@ -1671,8 +1723,8 @@ __zpl_xattr_nfs41acl_get(struct inode *ip, const char *name,
 		goto nfs4acl_get_out;
 	}
 
-	ok = zfsacl_to_nfsacl41i(vsecp, &nacl, &acl_size);
-	if (!ok) {
+	ret = zfsacl_to_nfsacl41i(vsecp, &nacl, &acl_size);
+	if (!ret) {
 		ret = -ENOMEM;
 		goto nfs4acl_get_out;
 	}
@@ -1749,10 +1801,10 @@ __zpl_xattr_nfs41acl_set(struct inode *ip, const char *name,
 		kmem_free(nacl, sizeof (nfsacl41i));
 		return (-ENOMEM);
 	}
-	ok = nfsacl41i_to_zfsacl(nacl, &vsecp);
-	if (!ok) {
+	ret = nfsacl41i_to_zfsacl(nacl, &vsecp);
+	if (ret) {
 		kmem_free(nacl, acl_size);
-		return (-EINVAL);
+		return (ret);
 	}
 
 	/* XDR_DECODE allocates memory for the array of aces */
