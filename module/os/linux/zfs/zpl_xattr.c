@@ -1585,7 +1585,7 @@ nfsacl41i_to_zfsacl(nfsacl41i *nacl, vsecattr_t *_vsecp)
 				break;
 
 			case ACE4_SPECIAL_GROUP:
-				acep->a_flags |= ACE_GROUP;
+				acep->a_flags |= (ACE_GROUP | ACE_IDENTIFIER_GROUP);
 				acep->a_who = -1;
 				break;
 
