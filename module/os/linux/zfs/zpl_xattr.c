@@ -1542,35 +1542,25 @@ acep_to_nfsace4i(const ace_t *acep, nfsace4i *nacep)
 }
 
 static int
-zfsacl_to_nfsacl41i(vsecattr_t vsecp, nfsacl41i **_nacl, size_t *_acl_size)
+zfsacl_to_nfsacl41i(const vsecattr_t vsecp, nfsacl41i **_nacl, size_t *_size)
 {
 	nfsacl41i *nacl = NULL;
 	nfsace4i *nacep = NULL;
+	ace_t *acep = NULL;
+
 	int i, error;
 	size_t acl_size;
-	ace_t *acep = NULL;
-	acep = (ace_t *)vsecp.vsa_aclentp;
 
-	if ((vsecp.vsa_aclcnt == 1) &&
-	    ((acep->a_type == ACE_ACCESS_ALLOWED_OBJECT_ACE_TYPE) &&
-	    (acep->a_flags == ACE_OWNER) &&
-	    (acep->a_access_mask == 0) &&
-	    (acep->a_who == -1))) {
-		acl_size = ACES_TO_ACLSIZE(0);
-		nacl = kmem_alloc(acl_size, KM_SLEEP);
-		nacl->na41_aces.na41_aces_len = 0;
-		nacl->na41_flag = vsecp.vsa_aclflags;
-	} else {
-		acl_size = ACES_TO_ACLSIZE(vsecp.vsa_aclcnt);
-		nacl = kmem_alloc(acl_size, KM_SLEEP);
-		nacep = (nfsace4i *)((char *)nacl + sizeof (nfsacl41i));
-		nacl->na41_aces.na41_aces_len = vsecp.vsa_aclcnt;
-		nacl->na41_flag = vsecp.vsa_aclflags;
-		nacl->na41_aces.na41_aces_val = nacep;
-	}
+	acl_size = ACES_TO_ACLSIZE(vsecp.vsa_aclcnt);
+
+	nacl = kmem_alloc(acl_size, KM_SLEEP);
+	nacl->na41_aces.na41_aces_len = vsecp.vsa_aclcnt;
+	nacl->na41_flag = vsecp.vsa_aclflags;
+	nacep = (nfsace4i *)((char *)nacl + sizeof (nfsacl41i));
+	nacl->na41_aces.na41_aces_val = nacep;
 
 	for (i = 0; i < nacl->na41_aces.na41_aces_len; i++) {
-		nfsace4i *nacep = &nacl->na41_aces.na41_aces_val[i];
+		nacep = &nacl->na41_aces.na41_aces_val[i];
 		acep = vsecp.vsa_aclentp + (i * sizeof (ace_t));
 		error = acep_to_nfsace4i(acep, nacep);
 		if (error) {
@@ -1578,7 +1568,7 @@ zfsacl_to_nfsacl41i(vsecattr_t vsecp, nfsacl41i **_nacl, size_t *_acl_size)
 			return (error);
 		}
 	}
-	*_acl_size = acl_size;
+	*_size = acl_size;
 	*_nacl = nacl;
 	return (0);
 }
@@ -1586,14 +1576,6 @@ zfsacl_to_nfsacl41i(vsecattr_t vsecp, nfsacl41i **_nacl, size_t *_acl_size)
 static int
 nfsace4i_to_acep(const nfsace4i *nacep, ace_t *acep)
 {
-	if (nacep == NULL) {
-		acep->a_type = ACE_ACCESS_ALLOWED_OBJECT_ACE_TYPE;
-		acep->a_flags = ACE_OWNER;
-		acep->a_access_mask = 0;
-		acep->a_who = -1;
-		return (0);
-	}
-
 	acep->a_type = nacep->type;
 	acep->a_flags = nacep->flag & NFS41_FLAGS;
 	acep->a_access_mask = nacep->access_mask;
@@ -1628,22 +1610,8 @@ nfsace4i_to_acep(const nfsace4i *nacep, ace_t *acep)
 static int
 nfsacl41i_to_zfsacl(const nfsacl41i *nacl, vsecattr_t *_vsecp)
 {
-	int i, error;
+	int i, error = 0;
 	vsecattr_t vsecp;
-
-	if (nacl->na41_aces.na41_aces_len == 0) {
-		/*
-		 * We have received a NULL DACL. SMB clients may do this during
-		 * tempfile generation. We need to allow this through. Store as
-		 * single owner ACL entry in ZFS.
-		 */
-		vsecp.vsa_aclcnt = 1;
-		vsecp.vsa_aclentsz = vsecp.vsa_aclcnt * sizeof (ace_t);
-		vsecp.vsa_mask = (VSA_ACE | VSA_ACE_ACLFLAGS);
-		vsecp.vsa_aclentp = kmem_alloc(vsecp.vsa_aclentsz, KM_SLEEP);
-		error = nfsace4i_to_acep(NULL, vsecp.vsa_aclentp);
-		return (error);
-	}
 	vsecp.vsa_aclcnt = nacl->na41_aces.na41_aces_len;
 	vsecp.vsa_aclflags = nacl->na41_flag;
 	vsecp.vsa_aclentsz = vsecp.vsa_aclcnt * sizeof (ace_t);
@@ -1656,7 +1624,7 @@ nfsacl41i_to_zfsacl(const nfsacl41i *nacl, vsecattr_t *_vsecp)
 		error = nfsace4i_to_acep(nacep, acep);
 	}
 	*_vsecp = vsecp;
-	return (B_TRUE);
+	return (error);
 }
 
 static int
@@ -1724,7 +1692,7 @@ __zpl_xattr_nfs41acl_get(struct inode *ip, const char *name,
 	}
 
 	ret = zfsacl_to_nfsacl41i(vsecp, &nacl, &acl_size);
-	if (!ret) {
+	if (ret) {
 		ret = -ENOMEM;
 		goto nfs4acl_get_out;
 	}
@@ -1758,7 +1726,7 @@ __zpl_xattr_nfs41acl_set(struct inode *ip, const char *name,
 	boolean_t ok;
 	XDR xdr = {0};
 	size_t acl_size = 0;
-	int ret, fl, naces;
+	int error, fl, naces;
 
 	if (ITOZSB(ip)->z_acl_type != ZFS_ACLTYPE_NFSV4)
 		return (-EOPNOTSUPP);
@@ -1801,10 +1769,10 @@ __zpl_xattr_nfs41acl_set(struct inode *ip, const char *name,
 		kmem_free(nacl, sizeof (nfsacl41i));
 		return (-ENOMEM);
 	}
-	ret = nfsacl41i_to_zfsacl(nacl, &vsecp);
-	if (ret) {
-		kmem_free(nacl, acl_size);
-		return (ret);
+	error = nfsacl41i_to_zfsacl(nacl, &vsecp);
+	if (error) {
+		kmem_free(nacl, sizeof (nfsacl41i));
+		return (error);
 	}
 
 	/* XDR_DECODE allocates memory for the array of aces */
@@ -1814,11 +1782,11 @@ __zpl_xattr_nfs41acl_set(struct inode *ip, const char *name,
 
 	crhold(cr);
 	fl = capable(CAP_DAC_OVERRIDE) ? ATTR_NOACLCHECK : 0;
-	ret = -zfs_setsecattr(ITOZ(ip), &vsecp, fl, cr);
+	error = -zfs_setsecattr(ITOZ(ip), &vsecp, fl, cr);
 	crfree(cr);
 
 	kmem_free(vsecp.vsa_aclentp, vsecp.vsa_aclentsz);
-	return (ret);
+	return (error);
 }
 ZPL_XATTR_SET_WRAPPER(zpl_xattr_nfs41acl_set);
 
