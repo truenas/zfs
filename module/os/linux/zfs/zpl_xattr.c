@@ -1612,6 +1612,7 @@ nfsacl41i_to_zfsacl(const nfsacl41i *nacl, vsecattr_t *_vsecp)
 {
 	int i, error = 0;
 	vsecattr_t vsecp;
+
 	vsecp.vsa_aclcnt = nacl->na41_aces.na41_aces_len;
 	vsecp.vsa_aclflags = nacl->na41_flag;
 	vsecp.vsa_aclentsz = vsecp.vsa_aclcnt * sizeof (ace_t);
