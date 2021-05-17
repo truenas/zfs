@@ -115,7 +115,7 @@ static const struct {
 #endif
 };
 
-#define	GENERIC_MASK(mask) ((mask & ~(MAY_READ | MAY_WRITE | MAY_EXEC)) != 0)
+#define	GENERIC_MASK(mask) ((mask & ~(MAY_READ | MAY_WRITE | MAY_EXEC)) == 0)
 
 static int
 zpl_xattr_permission(xattr_filldir_t *xf, const char *name, int name_len)
@@ -1411,7 +1411,7 @@ zpl_permission(struct inode *ip, int mask)
 	cr = CRED();
 	crhold(cr);
 	ret = -zfs_access(ITOZ(ip), to_check, V_ACE_MASK, cr);
-	if (!((ret == -EPERM) || (ret == -EACCES))) {
+	if (ret != -EPERM && ret != -EACCES) {
 		crfree(cr);
 		return (ret);
 	}

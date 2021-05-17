@@ -114,7 +114,7 @@ secpolicy_vnode_access2(const cred_t *cr, struct inode *ip, uid_t owner,
     mode_t curmode, mode_t wantmode)
 {
 	mode_t remainder = ~curmode & wantmode;
-	if (!(ITOZSB(ip)->z_acl_type == ZFS_ACLTYPE_NFSV4) ||
+	if ((ITOZSB(ip)->z_acl_type != ZFS_ACLTYPE_NFSV4) ||
 	    (remainder == 0)) {
 		return (0);
 	}
