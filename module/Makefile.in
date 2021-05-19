@@ -57,7 +57,7 @@ modules-Linux:
 	rpcgen -c "@abs_srcdir@/os/linux/zfs/nfs41acl.x" > "@abs_srcdir@/os/linux/zfs/nfs41acl_xdr.c"
 	sed -i "5i #pragma GCC diagnostic push" "@abs_srcdir@/os/linux/zfs/nfs41acl_xdr.c"
 	sed -i "6i #pragma GCC diagnostic ignored \"-Wunused-variable\"" "@abs_srcdir@/os/linux/zfs/nfs41acl_xdr.c"
-	sed -i -e "#pragma GCC diagnostic pop" "@abs_srcdir@/os/linux/zfs/nfs41acl_xdr.c"
+	echo "#pragma GCC diagnostic pop" >> "@abs_srcdir@/os/linux/zfs/nfs41acl_xdr.c"
 	list='$(SUBDIR_TARGETS)'; for targetdir in $$list; do \
 		$(MAKE) -C $$targetdir; \
 	done
