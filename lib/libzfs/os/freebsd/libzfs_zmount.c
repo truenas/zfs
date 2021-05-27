@@ -24,25 +24,21 @@
  * SUCH DAMAGE.
  */
 
-/*
- * This file implements Solaris compatible zmount() function.
- */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
-#include <sys/mount.h>
-#include <sys/uio.h>
+#include <sys/conf.h>
+#include <sys/errno.h>
 #include <sys/mntent.h>
+#include <sys/mnttab.h>
+#include <sys/mount.h>
+#include <sys/sysctl.h>
+#include <sys/uio.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mnttab.h>
-#include <sys/errno.h>
-#include <libzfs.h>
+#include <unistd.h>
 
+#include <libzfs.h>
 #include "libzfs_impl.h"
 
 static void
@@ -131,5 +127,14 @@ do_unmount(const char *mntpt, int flags)
 int
 zfs_mount_delegation_check(void)
 {
+	int usermount;
+	size_t len = sizeof (usermount);
+
+	if (geteuid() == UID_ROOT)
+		return (0);
+	if (sysctlbyname("vfs.usermount", &usermount, &len, NULL, 0) == -1)
+		return (errno);
+	if (usermount == 0)
+		return (EACCES);
 	return (0);
 }
