@@ -11,6 +11,7 @@ SUBDIRS = \
 	file_write \
 	get_diff \
 	largest_file \
+	leaktest \
 	libzfs_input_check \
 	mkbusy \
 	mkfile \
