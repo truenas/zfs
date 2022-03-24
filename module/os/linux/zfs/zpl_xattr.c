@@ -1705,7 +1705,7 @@ nfsacl41i_to_zfsacl(const nfsacl41i *nacl, vsecattr_t *_vsecp)
 	vsecattr_t vsecp;
 
 	vsecp.vsa_aclcnt = nacl->na41_aces.na41_aces_len;
-	vsecp.vsa_aclflags = nacl->na41_flag;
+	vsecp.vsa_aclflags = nacl->na41_flag & ACL_FLAGS_ALL;
 	vsecp.vsa_aclentsz = vsecp.vsa_aclcnt * sizeof (ace_t);
 	vsecp.vsa_mask = (VSA_ACE | VSA_ACE_ACLFLAGS);
 	vsecp.vsa_aclentp = kmem_alloc(vsecp.vsa_aclentsz, KM_SLEEP);
