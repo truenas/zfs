@@ -274,6 +274,14 @@ zpl_xattr_list(struct dentry *dentry, char *buffer, size_t buffer_size)
 	ZPL_VERIFY_ZP(zp);
 	rw_enter(&zp->z_xattr_lock, RW_READER);
 
+	if ((zfsvfs->z_acl_type == ZFS_ACLTYPE_NFSV4) &&
+	    ((zp->z_pflags & ZFS_ACL_TRIVIAL) == 0)) {
+		error = zpl_xattr_filldir(&xf, NFS41ACL_XATTR,
+		    sizeof (NFS41ACL_XATTR) - 1);
+		if (error)
+			goto out;
+	}
+
 	if (zfsvfs->z_use_sa && zp->z_is_sa) {
 		error = zpl_xattr_list_sa(&xf);
 		if (error)
