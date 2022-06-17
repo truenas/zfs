@@ -600,6 +600,22 @@ zfs_create(znode_t *dzp, char *name, vattr_t *vap, int excl,
 	os = zfsvfs->z_os;
 	zilog = zfsvfs->z_log;
 
+	/*
+	 * For compatibility purposes with data migrated from FreeBSD
+	 * (which will have NFSv4 ACL type), BSD file creation semantics
+	 * are forced rather than System V. Hence on new file creation
+	 * if NFSV4ACL we inherit GID from parent rather than take current
+	 * process GID. This makes S_ISGID on directories a de-facto
+	 * no-op, but we still honor setting / removing it and normal
+	 * inheritance of the bit on new directories in case user changes
+	 * the underlying ACL type.
+	 */
+	if ((vap->va_mask & ATTR_MODE) &&
+	    S_ISDIR(ZTOI(dzp)->i_mode) &&
+	    (zfsvfs->z_acl_type == ZFS_ACLTYPE_NFSV4)) {
+		vap->va_gid = KGID_TO_SGID(ZTOI(dzp)->i_gid);
+	}
+
 	if (zfsvfs->z_utf8 && u8_validate(name, strlen(name),
 	    NULL, U8_VALIDATE_ENTIRE, &error) < 0) {
 		ZFS_EXIT(zfsvfs);
@@ -1222,6 +1238,22 @@ zfs_mkdir(znode_t *dzp, char *dirname, vattr_t *vap, znode_t **zpp,
 	ZFS_ENTER(zfsvfs);
 	ZFS_VERIFY_ZP(dzp);
 	zilog = zfsvfs->z_log;
+
+	/*
+	 * For compatibility purposes with data migrated from FreeBSD
+	 * (which will have NFSv4 ACL type), BSD file creation semantics
+	 * are forced rather than System V. Hence on new file creation
+	 * if NFSV4ACL we inherit GID from parent rather than take current
+	 * process GID. This makes S_ISGID on directories a de-facto
+	 * no-op, but we still honor setting / removing it and normal
+	 * inheritance of the bit on new directories in case user changes
+	 * the underlying ACL type.
+	 */
+	if ((vap->va_mask & ATTR_MODE) &&
+	    S_ISDIR(ZTOI(dzp)->i_mode) &&
+	    (zfsvfs->z_acl_type == ZFS_ACLTYPE_NFSV4)) {
+		vap->va_gid = KGID_TO_SGID(ZTOI(dzp)->i_gid);
+	}
 
 	if (dzp->z_pflags & ZFS_XATTR) {
 		ZFS_EXIT(zfsvfs);
