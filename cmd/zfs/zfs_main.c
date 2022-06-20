@@ -3706,11 +3706,14 @@ zfs_do_list(int argc, char **argv)
 		fields = default_fields;
 
 	/*
-	 * If we are only going to list snapshot names and sort by name,
-	 * then we can use faster version.
+	 * If we are only going to list snapshot names and sort by name or
+	 * by createtxg, then we can use faster version.
 	 */
-	if (strcmp(fields, "name") == 0 && zfs_sort_only_by_name(sortcol))
+	if (strcmp(fields, "name") == 0 &&
+	    (zfs_sort_only_by_name(sortcol) ||
+	    zfs_sort_only_by_createtxg(sortcol))) {
 		flags |= ZFS_ITER_SIMPLE;
+	}
 
 	/*
 	 * If "-o space" and no types were specified, don't display snapshots.
