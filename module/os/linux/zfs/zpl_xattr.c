@@ -273,6 +273,14 @@ zpl_xattr_list(struct dentry *dentry, char *buffer, size_t buffer_size)
 		goto out1;
 	rw_enter(&zp->z_xattr_lock, RW_READER);
 
+	if ((zfsvfs->z_acl_type == ZFS_ACLTYPE_NFSV4) &&
+	    ((zp->z_pflags & ZFS_ACL_TRIVIAL) == 0)) {
+		error = zpl_xattr_filldir(&xf, NFS41ACL_XATTR,
+		    sizeof (NFS41ACL_XATTR) - 1);
+		if (error)
+			goto out;
+	}
+
 	if (zfsvfs->z_use_sa && zp->z_is_sa) {
 		error = zpl_xattr_list_sa(&xf);
 		if (error)
@@ -1480,6 +1488,14 @@ static xattr_handler_t zpl_xattr_acl_default_handler = {
 
 #endif /* CONFIG_FS_POSIX_ACL */
 
+/*
+ * zpl_permission() gets called by linux kernel whenever it checks
+ * inode_permission via inode->i_op->permission. The general preference
+ * is to defer to the standard in-kernel permission check (generic_permission)
+ * wherever possible.
+ *
+ * https://www.kernel.org/doc/Documentation/filesystems/vfs.txt
+ */
 int
 #if defined(HAVE_IOPS_PERMISSION_USERNS)
 zpl_permission(struct user_namespace *userns, struct inode *ip, int mask)
@@ -1525,25 +1541,41 @@ zpl_permission(struct inode *ip, int mask)
 	}
 
 	/*
-	 *  Avoid potentially blocking in RCU walk.
+	 * Fast path for execute checks. Do not use zfs_fastaccesschk_execute
+	 * since it may end up granting execute access in presence of explicit
+	 * deny entry for user / group, and it also read the ZFS ACL
+	 * (non-cached) which we wish to avoid in RCU.
 	 */
-	if (mask & MAY_NOT_BLOCK) {
-		return (-ECHILD);
-	}
+	if ((to_check == ACE_EXECUTE) &&
+	    (ITOZ(ip)->z_pflags & ZFS_NO_EXECS_DENIED))
+			return (0);
 
+	/*
+	 * inode permission operation may be called in rcu-walk mode
+	 * (mask & MAY_NOT_BLOCK). If in rcu-walk mode, the filesystem must
+	 * check the permission without blocking or storing to the inode.
+	 *
+	 * If a situation is encountered that rcu-walk cannot handle,
+	 * return -ECHILD and it will be called again in ref-walk mode.
+	 */
 	cr = CRED();
 	crhold(cr);
 	cookie = spl_fstrans_mark();
-	ret = -zfs_access(ITOZ(ip), to_check, V_ACE_MASK, cr);
-	if (ret != -EPERM && ret != -EACCES) {
-		spl_fstrans_unmark(cookie);
-		crfree(cr);
-		return (ret);
-	}
 
 	/*
-	 * There are some situations in which capabilities
-	 * may allow overriding the DACL.
+	 * There are some situations in which capabilities may allow overriding
+	 * the DACL. Skip reading ACL if requested permissions are fully
+	 * satisfied by capabilities.
+	 */
+
+	/*
+	 * CAP_DAC_OVERRIDE may override RWX on directories, and RW on other
+	 * files. Execute may also be overriden if at least one execute bit is
+	 * set. This behavior is not formally documented, but is covered in
+	 * commit messages and code comments in namei.c.
+	 *
+	 * CAP_DAC_READ_SEARCH may bypass file read permission checks and
+	 * directory read and execute permission checks.
 	 */
 	if (S_ISDIR(ip->i_mode)) {
 #ifdef SB_NFSV4ACL
@@ -1562,27 +1594,29 @@ zpl_permission(struct inode *ip, int mask)
 			crfree(cr);
 			return (0);
 		}
-		spl_fstrans_unmark(cookie);
-		crfree(cr);
-		return (ret);
 	}
 
-	if (to_check == ACE_READ_DATA) {
-		if (capable(CAP_DAC_READ_SEARCH)) {
-			spl_fstrans_unmark(cookie);
-			crfree(cr);
-			return (0);
-		}
-	}
-
-	if (!(mask & MAY_EXEC) ||
-	    (zfs_fastaccesschk_execute(ITOZ(ip), cr) == 0)) {
+	if (!(mask & MAY_EXEC) || (ip->i_mode & S_IXUGO)) {
 		if (capable(CAP_DAC_OVERRIDE)) {
 			spl_fstrans_unmark(cookie);
 			crfree(cr);
 			return (0);
 		}
 	}
+
+	if ((to_check == ACE_READ_DATA) &&
+	    capable(CAP_DAC_READ_SEARCH)) {
+		spl_fstrans_unmark(cookie);
+		crfree(cr);
+		return (0);
+	}
+
+	if (mask & MAY_NOT_BLOCK) {
+		spl_fstrans_unmark(cookie);
+		crfree(cr);
+		return (-ECHILD);
+	}
+	ret = -zfs_access(ITOZ(ip), to_check, V_ACE_MASK, cr);
 	spl_fstrans_unmark(cookie);
 	crfree(cr);
 	return (ret);
@@ -1840,9 +1874,11 @@ nfs4acl_get_out:
 ZPL_XATTR_GET_WRAPPER(zpl_xattr_nfs41acl_get);
 
 static int
-__zpl_xattr_nfs41acl_set(struct inode *ip, const char *name,
+__zpl_xattr_nfs41acl_set(zidmap_t *mnt_ns,
+    struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
+	(void) mnt_ns;
 	fstrans_cookie_t cookie;
 	cred_t *cr = CRED();
 	int error, fl, naces;
@@ -1851,12 +1887,14 @@ __zpl_xattr_nfs41acl_set(struct inode *ip, const char *name,
 	if (ITOZSB(ip)->z_acl_type != ZFS_ACLTYPE_NFSV4)
 		return (-EOPNOTSUPP);
 
-	/*
-	 * TODO: we may receive NULL value and size 0
-	 * when rmxattr() on our special xattr is called.
-	 * A function to "strip" the ACL needs to be added
-	 * to avoid POLA violation.
-	 */
+	if (value == NULL && size == 0) {
+		crhold(cr);
+		cookie = spl_fstrans_mark();
+		error = zfs_stripacl(ITOZ(ip), cr);
+		spl_fstrans_unmark(cookie);
+		crfree(cr);
+		return (error);
+	}
 
 	/* xdr data is 4-byte aligned */
 	if (((ulong_t)value % 4) != 0) {
