@@ -1,11 +1,22 @@
 name: zloop
 
-on:
-  push:
-  pull_request:
+on: [push, pull_request]
 
 jobs:
+  skip-zloop:
+    runs-on: ubuntu-latest
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - name: Skip Duplicate Actions
+        id: skip_check
+        uses: fkirc/skip-duplicate-actions@v3.4.1
+        with:
+          concurrent_skipping: 'same_content_newer'
+
   tests:
+    needs: skip-zloop
+    if: ${{ needs.skip-zloop.outputs.should_skip != 'true' }}
     runs-on: ubuntu-latest
     env:
       TEST_DIR: /var/tmp/zloop

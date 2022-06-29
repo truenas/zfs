@@ -1,11 +1,22 @@
 name: zfs-tests-sanity
 
-on:
-  push:
-  pull_request:
+on: [push, pull_request]
 
 jobs:
+  skip-tests-sanity:
+    runs-on: ubuntu-20.04
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - name: Skip Duplicate Actions
+        id: skip_check
+        uses: fkirc/skip-duplicate-actions@v3.4.1
+        with:
+          concurrent_skipping: 'same_content_newer'
+
   tests:
+    needs: skip-tests-sanity
+    if: ${{ needs.skip-tests-sanity.outputs.should_skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
