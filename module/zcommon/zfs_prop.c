@@ -708,6 +708,11 @@ zfs_prop_init(void)
 	zprop_register_impl(ZFS_PROP_CREATION, "creation", PROP_TYPE_NUMBER, 0,
 	    NULL, PROP_READONLY, ZFS_TYPE_DATASET | ZFS_TYPE_BOOKMARK,
 	    "<date>", "CREATION", B_FALSE, B_TRUE, NULL);
+
+	zprop_register_impl(ZFS_PROP_SNAPSHOTS_CHANGED, "snapshots_changed",
+	    PROP_TYPE_NUMBER, 0, NULL, PROP_READONLY, ZFS_TYPE_FILESYSTEM |
+	    ZFS_TYPE_VOLUME, "<date>", "SNAPSHOTS_CHANGED", B_FALSE, B_TRUE,
+	    NULL);
 }
 
 boolean_t
