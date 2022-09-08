@@ -3,6 +3,7 @@ $(MODULE)-objs += ../os/linux/spl/spl-condvar.o
 $(MODULE)-objs += ../os/linux/spl/spl-cred.o
 $(MODULE)-objs += ../os/linux/spl/spl-err.o
 $(MODULE)-objs += ../os/linux/spl/spl-generic.o
+$(MODULE)-objs += ../os/linux/spl/spl-kfpu.o
 $(MODULE)-objs += ../os/linux/spl/spl-kmem.o
 $(MODULE)-objs += ../os/linux/spl/spl-kmem-cache.o
 $(MODULE)-objs += ../os/linux/spl/spl-kstat.o
