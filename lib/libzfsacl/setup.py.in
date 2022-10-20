@@ -1,0 +1,30 @@
+from setuptools import setup, Extension, find_packages
+import os
+import sys
+
+srcdir = '@abs_top_srcdir@/lib/libzfsacl'
+
+topsrcdir = '@abs_top_srcdir@'
+relpath_topsrcdir = os.path.relpath(topsrcdir)
+if sys.platform.startswith('linux'):
+    src = ['libzfsacl_impl_linux.c', 'libpyzfsacl.c', 'libsunacl.c']
+else:
+    src = ['libzfsacl_impl_freebsd.c', 'libpyzfsacl.c']
+
+libzfsacl_mod = Extension('libzfsacl', include_dirs=[relpath_topsrcdir],
+                          sources=src)
+
+setup(
+    name='libzfsacl',
+    version='@VERSION@',
+    description='libzfsacl lib',
+    author='iXsystems Inc.',
+    author_email='dev@ixsystems.com',
+    url='https://docs.python.org/extending/building',
+    ext_modules=[libzfsacl_mod],
+    packages=find_packages(where=srcdir),
+    package_dir={"": os.path.relpath(srcdir)},
+    include_package_data=True,
+    python_requires='>=3.6,<4',
+    zip_safe=False,
+)

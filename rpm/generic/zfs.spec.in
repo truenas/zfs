@@ -346,6 +346,22 @@ This package contains the pam_zfs_key PAM module, which provides
 support for unlocking datasets on user login.
 %endif
 
+%package -n python%{__python_pkg_version}-libzfsacl
+Summary:        Python bindings for NFSv41 ACLs
+Group:          System Environment/Kernel
+Requires:       python%{__python_pkg_version}
+
+%if 0%{?rhel}%{?centos}%{?fedora}%{?suse_version}%{?openEuler}
+%if 0%{?centos} == 7
+BuildRequires:  python36-setuptools
+%else
+BuildRequires:  python%{__python_pkg_version}-setuptools
+%endif
+%endif
+
+%description -n python%{__python_pkg_version}-libzfsacl
+This package contains python library for accessing NFSv41 ACLS.
+
 %prep
 %if %{with debug}
     %define debug --enable-debug
@@ -587,3 +603,7 @@ systemctl --system daemon-reload >/dev/null || true
 %{_libdir}/security/*
 %{_datadir}/pam-configs/*
 %endif
+
+%files -n python%{__python_pkg_version}-libzfsacl
+%{__python_sitelib}/libzfsacl-*/*
+%{__python_sitelib}/libzfsacl.cpython*.so

@@ -2277,7 +2277,7 @@ zfs_stripacl(znode_t *zp, cred_t *cr)
 	if ((error = zfs_enter(zfsvfs, FTAG)) != 0)
 		return (error);
 
-        if ((error = zfs_verify_zp(zp)) != 0)
+	if ((error = zfs_verify_zp(zp)) != 0)
 		goto done;
 
 	if (zp->z_pflags & ZFS_IMMUTABLE) {
