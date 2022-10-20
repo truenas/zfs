@@ -1,0 +1,4 @@
+usr/lib/python3/dist-packages/libzfsacl-*.egg-info
+usr/lib/python3/dist-packages/libzfsacl.cpython-*.so
+lib/@DEB_HOST_MULTIARCH@/libzfsacl.so.*
+lib/@DEB_HOST_MULTIARCH@/libsunacl.so.*

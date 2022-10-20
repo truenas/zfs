@@ -183,6 +183,17 @@ Description: wrapper for libzfs_core C library (documentation)
  .
  This package contains the documentation.
 
+Package: openzfs-python3-libzfsacl
+Section: contrib/python
+Architecture: linux-any
+Depends: ${misc:Depends},
+         ${python3:Depends}
+Replaces: python3-libzfsacl
+Conflicts: python3-libzfsacl
+Description: Python module for accessing NFSV41 style ACLs
+ libzfsacl is cross platform python library for accessing NFSv41 style
+ ACLs.
+
 Package: openzfs-zfs-dkms
 Architecture: all
 Depends: dkms (>> 2.1.1.2-5),
@@ -248,6 +259,7 @@ Depends: openzfs-libnvpair3 (= ${binary:Version}),
          openzfs-libuutil3 (= ${binary:Version}),
          openzfs-libzfs4 (= ${binary:Version}),
          openzfs-libzpool5 (= ${binary:Version}),
+         openzfs-python3-libzfsacl (= ${binary:Version}),
          python3,
          ${misc:Depends},
          ${shlibs:Depends}
