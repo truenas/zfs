@@ -57,6 +57,10 @@ AM_CPPFLAGS += -DPKGDATADIR=\"$(pkgdatadir)\"
 AM_CPPFLAGS += $(DEBUG_CPPFLAGS)
 AM_CPPFLAGS += $(CODE_COVERAGE_CPPFLAGS)
 if BUILD_LINUX
+# NAS-118236: Vdevs from CORE are labeled with whole_disk=1, but we did not
+# create the partition table in ZFS and must not repartition them.  We know
+# SCALE never creates wholedisk vdevs, so just ignore the config.
+AM_CPPFLAGS += -DTRUENAS_SCALE_NEVER_WHOLEDISK
 AM_CPPFLAGS += -DTEXT_DOMAIN=\"zfs-linux-user\"
 endif
 if BUILD_FREEBSD
