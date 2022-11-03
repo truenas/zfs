@@ -88,6 +88,7 @@ zpool_relabel_disk(libzfs_handle_t *hdl, const char *path, const char *msg)
 	return (0);
 }
 
+#ifndef TRUENAS_SCALE_NEVER_WHOLEDISK
 /*
  * Read the EFI label from the config, if a label does not exist then
  * pass back the error to the caller. If the caller has passed a non-NULL
@@ -119,6 +120,7 @@ read_efi_label(nvlist_t *config, diskaddr_t *sb)
 	}
 	return (err);
 }
+#endif
 
 /*
  * determine where a partition starts on a disk in the current
@@ -127,6 +129,9 @@ read_efi_label(nvlist_t *config, diskaddr_t *sb)
 static diskaddr_t
 find_start_block(nvlist_t *config)
 {
+#ifdef TRUENAS_SCALE_NEVER_WHOLEDISK
+	(void) config;
+#else
 	nvlist_t **child;
 	uint_t c, children;
 	diskaddr_t sb = MAXOFFSET_T;
@@ -150,6 +155,7 @@ find_start_block(nvlist_t *config)
 			return (sb);
 		}
 	}
+#endif
 	return (MAXOFFSET_T);
 }
 

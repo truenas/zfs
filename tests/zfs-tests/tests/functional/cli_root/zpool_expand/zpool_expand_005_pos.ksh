@@ -46,6 +46,8 @@
 
 verify_runnable "global"
 
+log_unsupported "SKIP because auto partitioning removed for SCALE"
+
 function cleanup
 {
 	poolexists $TESTPOOL1 && destroy_pool $TESTPOOL1
