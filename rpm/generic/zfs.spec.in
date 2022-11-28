@@ -100,7 +100,7 @@
 %define __python_cffi_pkg         python%{__python_pkg_version}-cffi
 %define __python_setuptools_pkg   python%{__python_pkg_version}-setuptools
 %endif
-%define __python_sitelib          %(%{__python} -Esc "from distutils.sysconfig import get_python_lib; print(get_python_lib())")
+%define __python_sitelib          %(%{__python} -Esc "from distutils.sysconfig import get_python_lib; print(get_python_lib())" 2>/dev/null || %{__python} -Esc "import sysconfig; print(sysconfig.get_path('purelib'))")
 
 # By default python-pyzfs is enabled, with the exception of
 # RHEL 6 which by default uses Python 2.6 which is too old.
