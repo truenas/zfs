@@ -2608,8 +2608,13 @@ zfs_zaccess_common(znode_t *zp, uint32_t v4_mode, uint32_t *working_mode,
 		return (SET_ERROR(EPERM));
 	}
 
-	if (zp->z_pflags & ZFS_ACL_TRIVIAL)
+	/*
+	 * Workaround for POSIX ACL type to avoid deadlock
+	 */
+	if ((zp->z_pflags & ZFS_ACL_TRIVIAL) &&
+	    zfsvfs->z_acl_type != ZFS_ACLTYPE_POSIX) {
 		return (zfs_zaccess_trivial(zp, working_mode, cr));
+	}
 
 	return (zfs_zaccess_aces_check(zp, working_mode, B_FALSE, cr));
 }
