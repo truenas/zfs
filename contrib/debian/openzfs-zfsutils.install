@@ -1,7 +1,6 @@
 etc/default/zfs
 etc/zfs/zfs-functions
 etc/zfs/zpool.d/
-etc/bash_completion.d/zfs
 lib/systemd/system-generators/
 lib/systemd/system-preset/
 lib/systemd/system/zfs-import-cache.service
@@ -12,9 +11,6 @@ lib/systemd/system/zfs-mount.service
 lib/systemd/system/zfs-scrub-monthly@.timer
 lib/systemd/system/zfs-scrub-weekly@.timer
 lib/systemd/system/zfs-scrub@.service
-lib/systemd/system/zfs-trim-monthly@.timer
-lib/systemd/system/zfs-trim-weekly@.timer
-lib/systemd/system/zfs-trim@.service
 lib/systemd/system/zfs-share.service
 lib/systemd/system/zfs-volume-wait.service
 lib/systemd/system/zfs-volumes.target
@@ -37,7 +33,6 @@ usr/lib/zfs-linux/zpool_influxdb
 usr/sbin/arc_summary
 usr/sbin/arcstat
 usr/sbin/dbufstat
-usr/sbin/zilstat
 usr/share/zfs/compatibility.d/
 usr/share/bash-completion/completions
 usr/share/man/man1/arcstat.1
@@ -82,11 +77,9 @@ usr/share/man/man8/zfs-unallow.8
 usr/share/man/man8/zfs-unjail.8
 usr/share/man/man8/zfs-unload-key.8
 usr/share/man/man8/zfs-unmount.8
-usr/share/man/man8/zfs-unzone.8
 usr/share/man/man8/zfs-upgrade.8
 usr/share/man/man8/zfs-userspace.8
 usr/share/man/man8/zfs-wait.8
-usr/share/man/man8/zfs-zone.8
 usr/share/man/man8/zfs.8
 usr/share/man/man8/zfs_ids_to_path.8
 usr/share/man/man7/zfsconcepts.7
