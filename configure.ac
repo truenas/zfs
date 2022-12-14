@@ -32,6 +32,7 @@
 
 AC_INIT(m4_esyscmd(grep ^Name: META | cut -d ':' -f 2 | tr -d ' \n'),
 	m4_esyscmd(grep ^Version: META | cut -d ':' -f 2 | tr -d ' \n'))
+CFGOPTS="$*"
 AC_LANG(C)
 ZFS_AC_META
 AC_CONFIG_AUX_DIR([config])
@@ -94,6 +95,7 @@ AC_CONFIG_FILES([
 	contrib/Makefile
 	contrib/bash_completion.d/Makefile
 	contrib/bpftrace/Makefile
+	contrib/debian/rules
 	contrib/dracut/02zfsexpandknowledge/Makefile
 	contrib/dracut/90zfs/Makefile
 	contrib/dracut/Makefile
