@@ -3,11 +3,9 @@ include $(top_srcdir)/config/Shellcheck.am
 
 bashcompletiondir = $(sysconfdir)/bash_completion.d
 
-noinst_DATA = zfs
+nodist_bashcompletion_DATA  = %D%/zfs
+SUBSTFILES                 += $(nodist_bashcompletion_DATA)
 
-EXTRA_DIST += $(noinst_DATA)
-SUBSTFILES += $(noinst_DATA)
-
-SHELLCHECKSCRIPTS = $(noinst_DATA)
+SHELLCHECKSCRIPTS = $(nodist_bashcompletion_DATA)
 SHELLCHECK_SHELL = bash
 SHELLCHECK_IGNORE = ,SC2207
