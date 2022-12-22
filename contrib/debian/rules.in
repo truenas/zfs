@@ -164,15 +164,19 @@ override_dh_missing:
 	dh_missing --fail-missing
 
 override_dh_installinit:
-	dh_installinit -r --no-restart-after-upgrade --name zfs-import
-	dh_installinit -r --no-restart-after-upgrade --name zfs-mount
-	dh_installinit -r --no-restart-after-upgrade --name zfs-load-key
-	dh_installinit -R --name zfs-share
+	dh_installinit --no-start --no-enable --name zfs-import
+	dh_installinit --no-start --no-enable --name zfs-mount
+	dh_installinit --no-start --no-enable --name zfs-load-key
+	dh_installinit --no-start --no-enable --name zfs-share
 	dh_installinit -R --name zfs-zed
 
 override_dh_installsystemd:
 	mkdir -p debian/openzfs-zfsutils/lib/systemd/system
 	ln -sr /dev/null debian/openzfs-zfsutils/lib/systemd/system/zfs-import.service
+	dh_installsystemd --no-start --no-enable -X zfs-import-cache.service
+	dh_installsystemd --name zfs-import-cache
+	dh_installsystemd --no-start --no-enable -X zfs-volume-wait.service
+	dh_installsystemd --name zfs-volume-wait
 	dh_installsystemd --no-stop-on-upgrade -X zfs-zed.service
 	dh_installsystemd --name zfs-zed
 
