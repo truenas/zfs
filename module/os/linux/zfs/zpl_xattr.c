@@ -1835,9 +1835,11 @@ nfs4acl_get_out:
 ZPL_XATTR_GET_WRAPPER(zpl_xattr_nfs41acl_get);
 
 static int
-__zpl_xattr_nfs41acl_set(struct inode *ip, const char *name,
+__zpl_xattr_nfs41acl_set(zidmap_t *mnt_ns,
+    struct inode *ip, const char *name,
     const void *value, size_t size, int flags)
 {
+	(void) mnt_ns;
 	cred_t *cr = CRED();
 	int error, fl, naces;
 	vsecattr_t vsecp = { .vsa_mask = (VSA_ACE | VSA_ACE_ACLFLAGS) };
