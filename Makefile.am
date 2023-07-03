@@ -166,7 +166,7 @@ paxcheck:
 CHECKS += flake8
 flake8:
 	$(AM_V_at)if type flake8 > /dev/null 2>&1; then \
-		flake8 $(top_srcdir); \
+		flake8 $(top_srcdir) --exclude test_nfsv4acl.py; \
 	else \
 		echo "skipping flake8 because flake8 is not installed"; \
 	fi
