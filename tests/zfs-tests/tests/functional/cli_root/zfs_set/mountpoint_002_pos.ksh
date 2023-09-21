@@ -35,9 +35,7 @@
 #
 # DESCRIPTION:
 #	If ZFS is currently managing the file system but it is currently unmounted,
-#	and the mountpoint property is changed, the file system should be mounted
-#	if it is a valid mountpoint and canmount allows to mount, otherwise it
-#	should not be mounted.
+#	and the mountpoint property is changed, the file system remains unmounted.
 #
 # STRATEGY:
 # 1. Setup a pool and create fs, ctr within it.
@@ -64,7 +62,7 @@ function cleanup
 }
 
 log_assert "Setting a valid mountpoint for an unmounted file system, \
-	it gets mounted."
+	it remains unmounted."
 log_onexit cleanup
 
 old_fs_mpt=$(get_prop mountpoint $TESTPOOL/$TESTFS)
@@ -85,11 +83,7 @@ while (( i < ${#dataset[@]} )); do
 	while (( j < ${#values[@]} )); do
 		set_n_check_prop "${values[j]}" "mountpoint" \
 			"${dataset[i]}"
-		if [ "${dataset[i]}" = "$TESTPOOL/$TESTFS" ]; then
-			log_must ismounted ${dataset[i]}
-		else
-			log_mustnot ismounted ${dataset[i]}
-		fi
+		log_mustnot ismounted ${dataset[i]}
 		(( j += 1 ))
 	done
 	cleanup
