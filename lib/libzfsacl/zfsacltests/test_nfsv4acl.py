@@ -548,11 +548,39 @@ class TestNFSAcl(unittest.TestCase):
 
     # Test deny ACE works for PERM_READ_ACL
     def test_035_permset_deny_read_acl(self):
-        pass
+        tfile = f'{self.TDIR}/test.txt'
+        os.makedirs(self.TDIR)
+        with open(tfile, 'w'):
+            pass
+        tfacl = libzfsacl.Acl(path=tfile)
+        newEntry = tfacl.create_entry(0)
+        newEntry.entry_type = libzfsacl.ENTRY_TYPE_DENY
+        newEntry.who = (libzfsacl.WHOTYPE_USER, self.ZFS_ACL_STAFF1_UID)
+        newEntry.flagset = 0
+        newEntry.permset = libzfsacl.PERM_READ_ACL
+        tfacl.setacl(path=tfile)
+        cmd = f"zfs_getnfs4facl {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        shutil.rmtree(self.TDIR)
+        self.assertEqual(res["result"], False, "Failed to deny PERM_READ_ACL")
 
     # Test deny ACE works for PERM_WRITE_ACL
     def test_036_permset_deny_write_acl(self):
-        pass
+        tfile = f'{self.TDIR}/test.txt'
+        os.makedirs(self.TDIR)
+        with open(tfile, 'w'):
+            pass
+        tfacl = libzfsacl.Acl(path=tfile)
+        newEntry = tfacl.create_entry(0)
+        newEntry.entry_type = libzfsacl.ENTRY_TYPE_DENY
+        newEntry.who = (libzfsacl.WHOTYPE_USER, self.ZFS_ACL_STAFF1_UID)
+        newEntry.flagset = 0
+        newEntry.permset = libzfsacl.PERM_WRITE_ACL
+        tfacl.setacl(path=tfile)
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        shutil.rmtree(self.TDIR)
+        self.assertEqual(res["result"], False, "Failed to deny PERM_WRITE_ACL")
 
     # Test deny ACE works for PERM_WRITE_OWNER
     def test_037_permset_deny_write_owner(self):
@@ -721,11 +749,39 @@ class TestNFSAcl(unittest.TestCase):
 
     # Test allow ACE works for PERM_READ_ACL
     def test_046_permset_allow_read_acl(self):
-        pass
+        tfile = f'{self.TDIR}/test.txt'
+        os.makedirs(self.TDIR)
+        with open(tfile, 'w'):
+            pass
+        tfacl = libzfsacl.Acl(path=tfile)
+        newEntry = tfacl.create_entry(0)
+        newEntry.entry_type = libzfsacl.ENTRY_TYPE_ALLOW
+        newEntry.who = (libzfsacl.WHOTYPE_USER, self.ZFS_ACL_STAFF1_UID)
+        newEntry.flagset = 0
+        newEntry.permset = libzfsacl.PERM_READ_ACL
+        tfacl.setacl(path=tfile)
+        cmd = f"zfs_getnfs4facl {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        shutil.rmtree(self.TDIR)
+        self.assertEqual(res["result"], True, "Failed to allow PERM_READ_ACL")
 
     # Test allow ACE works for PERM_WRITE_ACL
     def test_047_permset_allow_write_acl(self):
-        pass
+        tfile = f'{self.TDIR}/test.txt'
+        os.makedirs(self.TDIR)
+        with open(tfile, 'w'):
+            pass
+        tfacl = libzfsacl.Acl(path=tfile)
+        newEntry = tfacl.create_entry(0)
+        newEntry.entry_type = libzfsacl.ENTRY_TYPE_ALLOW
+        newEntry.who = (libzfsacl.WHOTYPE_USER, self.ZFS_ACL_STAFF1_UID)
+        newEntry.flagset = 0
+        newEntry.permset = libzfsacl.PERM_WRITE_ACL
+        tfacl.setacl(path=tfile)
+        cmd = f"zfs_setnfs4facl -a u:{self.ZFS_ACL_STAFF1}:rw-pD-aARWcCos:-------:allow {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        shutil.rmtree(self.TDIR)
+        self.assertEqual(res["result"], True, "Failed to allow PERM_WRITE_ACL")
 
     # Test allow ACE works for PERM_WRITE_OWNER
     # Following test fails due to unknown reasons, investigate...
@@ -896,11 +952,40 @@ class TestNFSAcl(unittest.TestCase):
 
     # Test omit for PERM_READ_ACL
     def test_057_permset_omit_read_acl(self):
-        pass
+        tfile = f'{self.TDIR}/test.txt'
+        os.makedirs(self.TDIR)
+        with open(tfile, 'w'):
+            pass
+        tfacl = libzfsacl.Acl(path=tfile)
+        newEntry = tfacl.create_entry(0)
+        newEntry.entry_type = libzfsacl.ENTRY_TYPE_ALLOW
+        newEntry.who = (libzfsacl.WHOTYPE_USER, self.ZFS_ACL_STAFF1_UID)
+        newEntry.flagset = 0
+        newEntry.permset = self.OMIT_PERMSET & ~(libzfsacl.PERM_READ_ACL)
+        tfacl.setacl(path=tfile)
+        cmd = f"zfs_getnfs4facl {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        shutil.rmtree(self.TDIR)
+        #self.assertEqual(res["result"], False)
 
     # Test omit for PERM_WRITE_ACL
     def test_058_permset_omit_write_acl(self):
-        pass
+        tfile = f'{self.TDIR}/test.txt'
+        os.makedirs(self.TDIR)
+        with open(tfile, 'w'):
+            pass
+        tfacl = libzfsacl.Acl(path=tfile)
+        newEntry = tfacl.create_entry(0)
+        newEntry.entry_type = libzfsacl.ENTRY_TYPE_ALLOW
+        newEntry.who = (libzfsacl.WHOTYPE_USER, self.ZFS_ACL_STAFF1_UID)
+        newEntry.flagset = 0
+        newEntry.permset = self.OMIT_PERMSET & ~(libzfsacl.PERM_WRITE_ACL)
+        tfacl.setacl(path=tfile)
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        print(res["output"] + res["error"])
+        shutil.rmtree(self.TDIR)
+        self.assertEqual(res["result"], False)
 
     # Test omit for PERM_WRITE_OWNER
     def test_059_permset_omit_write_owner(self):
@@ -970,6 +1055,12 @@ class TestNFSAcl(unittest.TestCase):
         cmd = f"chown {self.ZFS_ACL_STAFF1} {tfile}"
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_DATA")
+        # cmd = f"zfs_getnfs4facl {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_DATA")
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_DATA")
         shutil.rmtree(self.TDIR)
 
     # Test allowing PERM_WRITE_DATA only allows writing data
@@ -999,6 +1090,12 @@ class TestNFSAcl(unittest.TestCase):
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_DATA")
         cmd = f"chown {self.ZFS_ACL_STAFF1} {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_DATA")
+        # cmd = f"zfs_getnfs4facl {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_DATA")
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_DATA")
         shutil.rmtree(self.TDIR)
@@ -1034,6 +1131,12 @@ class TestNFSAcl(unittest.TestCase):
         cmd = f"chown {self.ZFS_ACL_STAFF1} {tfile}"
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_EXECUTE")
+        # cmd = f"zfs_getnfs4facl {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_EXECUTE")
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_EXECUTE")
         shutil.rmtree(self.TDIR)
 
     # Test allowing PERM_READ_ATTRIBUTES only allows to read attributes
@@ -1062,6 +1165,12 @@ class TestNFSAcl(unittest.TestCase):
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ATTRIBUTES")
         cmd = f"chown {self.ZFS_ACL_STAFF1} {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ATTRIBUTES")
+        # cmd = f"zfs_getnfs4facl {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ATTRIBUTES")
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ATTRIBUTES")
         shutil.rmtree(self.TDIR)
@@ -1094,6 +1203,12 @@ class TestNFSAcl(unittest.TestCase):
         cmd = f"chown {self.ZFS_ACL_STAFF1} {tfile}"
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ATTRIBUTES")
+        # cmd = f"zfs_getnfs4facl {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ATTRIBUTES")
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ATTRIBUTES")
         shutil.rmtree(self.TDIR)
 
     # Test allowing PERM_DELETE only allows to delete
@@ -1124,15 +1239,85 @@ class TestNFSAcl(unittest.TestCase):
         cmd = f"chown {self.ZFS_ACL_STAFF1} {tfile}"
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_DELETE")
+        # cmd = f"zfs_getnfs4facl {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_DELETE")
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_DELETE")
         shutil.rmtree(self.TDIR)
 
     # Test allowing PERM_READ_ACL only allows to read ACL
     def test_067_permset_restrict_read_acl(self):
-        pass
+        tfile = f'{self.TDIR}/test.txt'
+        os.makedirs(self.TDIR)
+        with open(tfile, 'w'):
+            pass
+        tdacl = libzfsacl.Acl(path=self.TDIR)
+        newEntry = tdacl.create_entry(0)
+        newEntry.entry_type = libzfsacl.ENTRY_TYPE_ALLOW
+        newEntry.who = (libzfsacl.WHOTYPE_USER, self.ZFS_ACL_STAFF1_UID)
+        newEntry.flagset = 0
+        newEntry.permset = libzfsacl.PERM_READ_ACL
+        tdacl.setacl(path=self.TDIR)
+        # cmd = f"cat {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ACL")
+        cmd = f'echo -n "CAT" >> {tfile}'
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ACL")
+        # cmd = f"stat {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ACL")
+        cmd = f"touch a -m -t 201512180130.09 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ACL")
+        cmd = f"rm -f {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ACL")
+        cmd = f"chown {self.ZFS_ACL_STAFF1} {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ACL")
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_READ_ACL")
+        shutil.rmtree(self.TDIR)
 
-    # Test allowing PERM_READ_ACL only allows to write ACL
+    # Test allowing PERM_WRITE_ACL only allows to write ACL
     def test_068_permset_restrict_write_acl(self):
-        pass
+        tfile = f'{self.TDIR}/test.txt'
+        os.makedirs(self.TDIR)
+        with open(tfile, 'w'):
+            pass
+        tdacl = libzfsacl.Acl(path=self.TDIR)
+        newEntry = tdacl.create_entry(0)
+        newEntry.entry_type = libzfsacl.ENTRY_TYPE_ALLOW
+        newEntry.who = (libzfsacl.WHOTYPE_USER, self.ZFS_ACL_STAFF1_UID)
+        newEntry.flagset = 0
+        newEntry.permset = libzfsacl.PERM_WRITE_ACL
+        tdacl.setacl(path=self.TDIR)
+        # cmd = f"cat {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ACL")
+        cmd = f'echo -n "CAT" >> {tfile}'
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ACL")
+        # cmd = f"stat {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ACL")
+        cmd = f"touch a -m -t 201512180130.09 {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ACL")
+        cmd = f"rm -f {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ACL")
+        cmd = f"chown {self.ZFS_ACL_STAFF1} {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ACL")
+        # cmd = f"zfs_getnfs4facl {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_ACL")
+        shutil.rmtree(self.TDIR)
 
     # Test allowing PERM_WRITE_OWNER only allows to write owner
     def test_069_permset_restrict_write_owner(self):
@@ -1160,6 +1345,12 @@ class TestNFSAcl(unittest.TestCase):
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_OWNER")
         cmd = f"rm -f {tfile}"
+        res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_OWNER")
+        # cmd = f"zfs_getnfs4facl {tfile}"
+        # res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
+        # self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_OWNER")
+        cmd = f"zfs_setnfs4facl -x 0 {tfile}"
         res = run_as_user(cmd, self.ZFS_ACL_STAFF1)
         self.assertEqual(res["result"], False, "Failed to restrict PERM_WRITE_OWNER")
         shutil.rmtree(self.TDIR)
