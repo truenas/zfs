@@ -1,3 +1,9 @@
+openzfs (2.1.14-0) unstable; urgency=medium
+
+  * Merge tag zfs-2.1.14
+
+ -- Ameer Hamza <ahamza@ixsystems.com>  Mon, 01 Dec 2023 09:00:00 -0500
+
 openzfs (2.1.13-0) unstable; urgency=medium
 
   * Merge tag zfs-2.1.13
