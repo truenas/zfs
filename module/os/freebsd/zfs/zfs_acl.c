@@ -2293,6 +2293,12 @@ zfs_zaccess_common(znode_t *zp, uint32_t v4_mode, uint32_t *working_mode,
 		return (SET_ERROR(EPERM));
 	}
 
+	if (zp->z_pflags & ZFS_ACL_TRIVIAL) {
+		err = vaccess(ZTOV(zp)->v_type, zp->z_mode, zp->z_uid,
+			zp->z_gid, *working_mode, cr);
+		return (err ? SET_ERROR(EPERM) : 0);
+	}
+
 	return (zfs_zaccess_aces_check(zp, working_mode, B_FALSE, cr));
 }
 
