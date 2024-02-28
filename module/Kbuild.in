@@ -327,6 +327,7 @@ ZFS_OBJS := \
 	dbuf.o \
 	dbuf_stats.o \
 	ddt.o \
+	ddt_stats.o \
 	ddt_zap.o \
 	dmu.o \
 	dmu_diff.o \
@@ -447,6 +448,7 @@ ZFS_OBJS_OS := \
 	trace.o \
 	vdev_disk.o \
 	vdev_file.o \
+	vdev_label_os.o \
 	zfs_acl.o \
 	zfs_ctldir.o \
 	zfs_debug.o \

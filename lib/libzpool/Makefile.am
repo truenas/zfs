@@ -43,6 +43,7 @@ nodist_libzpool_la_SOURCES = \
 	module/os/linux/zfs/arc_os.c \
 	module/os/linux/zfs/trace.c \
 	module/os/linux/zfs/vdev_file.c \
+	module/os/linux/zfs/vdev_label_os.c \
 	module/os/linux/zfs/zfs_debug.c \
 	module/os/linux/zfs/zfs_racct.c \
 	module/os/linux/zfs/zfs_znode.c \
@@ -78,6 +79,7 @@ nodist_libzpool_la_SOURCES = \
 	module/zfs/dbuf.c \
 	module/zfs/dbuf_stats.c \
 	module/zfs/ddt.c \
+	module/zfs/ddt_stats.c \
 	module/zfs/ddt_zap.c \
 	module/zfs/dmu.c \
 	module/zfs/dmu_diff.c \

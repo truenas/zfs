@@ -2161,6 +2161,7 @@ typedef struct status_cbdata {
 	boolean_t	cb_explain;
 	boolean_t	cb_first;
 	boolean_t	cb_dedup_stats;
+	boolean_t	cb_print_unhealthy;
 	boolean_t	cb_print_status;
 	boolean_t	cb_print_slow_ios;
 	boolean_t	cb_print_vdev_init;
@@ -2358,6 +2359,35 @@ health_str_to_color(const char *health)
 }
 
 /*
+ * Called for each leaf vdev.  Returns 0 if the vdev is healthy.
+ * A vdev is unhealthy if any of the following are true:
+ * 1) there are read, write, or checksum errors,
+ * 2) its state is not ONLINE, or
+ * 3) slow IO reporting was requested (-s) and there are slow IOs.
+ */
+static int
+vdev_health_check_cb(void *hdl_data, nvlist_t *nv, void *data)
+{
+	status_cbdata_t *cb = data;
+	vdev_stat_t *vs;
+	uint_t vsc;
+	(void) hdl_data;
+
+	if (nvlist_lookup_uint64_array(nv, ZPOOL_CONFIG_VDEV_STATS,
+	    (uint64_t **)&vs, &vsc) != 0)
+		return (1);
+
+	if (vs->vs_checksum_errors || vs->vs_read_errors ||
+	    vs->vs_write_errors || vs->vs_state != VDEV_STATE_HEALTHY)
+		return (1);
+
+	if (cb->cb_print_slow_ios && vs->vs_slow_ios)
+		return (1);
+
+	return (0);
+}
+
+/*
  * Print out configuration state as requested by status_callback.
  */
 static void
@@ -2375,7 +2405,8 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 	const char *state;
 	const char *type;
 	const char *path = NULL;
-	const char *rcolor = NULL, *wcolor = NULL, *ccolor = NULL;
+	const char *rcolor = NULL, *wcolor = NULL, *ccolor = NULL,
+	    *scolor = NULL;
 
 	if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_CHILDREN,
 	    &child, &children) != 0)
@@ -2402,6 +2433,15 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 			state = gettext("AVAIL");
 	}
 
+	/*
+	 * If '-e' is specified then top-level vdevs and their children
+	 * can be pruned if all of their leaves are healthy.
+	 */
+	if (cb->cb_print_unhealthy && depth > 0 &&
+	    for_each_vdev_in_nvlist(nv, vdev_health_check_cb, cb) == 0) {
+		return;
+	}
+
 	printf_color(health_str_to_color(state),
 	    "\t%*s%-*s  %-8s", depth, "", cb->cb_namewidth - depth,
 	    name, state);
@@ -2415,6 +2455,9 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 
 		if (vs->vs_checksum_errors)
 			ccolor = ANSI_RED;
+
+		if (vs->vs_slow_ios)
+			scolor = ANSI_BLUE;
 
 		if (cb->cb_literal) {
 			fputc(' ', stdout);
@@ -2448,9 +2491,10 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 			}
 
 			if (cb->cb_literal)
-				printf(" %5llu", (u_longlong_t)vs->vs_slow_ios);
+				printf_color(scolor, " %5llu",
+				    (u_longlong_t)vs->vs_slow_ios);
 			else
-				printf(" %5s", rbuf);
+				printf_color(scolor, " %5s", rbuf);
 		}
 		if (cb->cb_print_power) {
 			if (children == 0)  {
@@ -2525,7 +2569,13 @@ print_status_config(zpool_handle_t *zhp, status_cbdata_t *cb, const char *name,
 			break;
 
 		case VDEV_AUX_ERR_EXCEEDED:
-			(void) printf(gettext("too many errors"));
+			if (vs->vs_read_errors + vs->vs_write_errors +
+			    vs->vs_checksum_errors == 0 && children == 0 &&
+			    vs->vs_slow_ios > 0) {
+				(void) printf(gettext("too many slow I/Os"));
+			} else {
+				(void) printf(gettext("too many errors"));
+			}
 			break;
 
 		case VDEV_AUX_IO_FAILURE:
@@ -3226,7 +3276,8 @@ zfs_force_import_required(nvlist_t *config)
 	 * local hostid.
 	 */
 	if (nvlist_lookup_uint64(nvinfo, ZPOOL_CONFIG_HOSTID, &hostid) != 0)
-		nvlist_lookup_uint64(config, ZPOOL_CONFIG_HOSTID, &hostid);
+		(void) nvlist_lookup_uint64(config, ZPOOL_CONFIG_HOSTID,
+		    &hostid);
 
 	if (state != POOL_STATE_EXPORTED && hostid != get_system_hostid())
 		return (B_TRUE);
@@ -6031,6 +6082,7 @@ zpool_do_iostat(int argc, char **argv)
 				print_iostat_header(&cb);
 
 			if (skip) {
+				(void) fflush(stdout);
 				(void) fsleep(interval);
 				continue;
 			}
@@ -6061,18 +6113,13 @@ zpool_do_iostat(int argc, char **argv)
 
 		}
 
-		/*
-		 * Flush the output so that redirection to a file isn't buffered
-		 * indefinitely.
-		 */
-		(void) fflush(stdout);
-
 		if (interval == 0)
 			break;
 
 		if (count != 0 && --count == 0)
 			break;
 
+		(void) fflush(stdout);
 		(void) fsleep(interval);
 	}
 
@@ -6595,6 +6642,8 @@ zpool_do_list(int argc, char **argv)
 			break;
 
 		pool_list_free(list);
+
+		(void) fflush(stdout);
 		(void) fsleep(interval);
 	}
 
@@ -6731,9 +6780,17 @@ zpool_do_attach_or_replace(int argc, char **argv, int replacing)
 	ret = zpool_vdev_attach(zhp, old_disk, new_disk, nvroot, replacing,
 	    rebuild);
 
-	if (ret == 0 && wait)
-		ret = zpool_wait(zhp,
-		    replacing ? ZPOOL_WAIT_REPLACE : ZPOOL_WAIT_RESILVER);
+	if (ret == 0 && wait) {
+		zpool_wait_activity_t activity = ZPOOL_WAIT_RESILVER;
+		char raidz_prefix[] = "raidz";
+		if (replacing) {
+			activity = ZPOOL_WAIT_REPLACE;
+		} else if (strncmp(old_disk,
+		    raidz_prefix, strlen(raidz_prefix)) == 0) {
+			activity = ZPOOL_WAIT_RAIDZ_EXPAND;
+		}
+		ret = zpool_wait(zhp, activity);
+	}
 
 	nvlist_free(props);
 	nvlist_free(nvroot);
@@ -6759,17 +6816,21 @@ zpool_do_replace(int argc, char **argv)
 }
 
 /*
- * zpool attach [-fsw] [-o property=value] <pool> <device> <new_device>
+ * zpool attach [-fsw] [-o property=value] <pool> <device>|<vdev> <new_device>
  *
  *	-f	Force attach, even if <new_device> appears to be in use.
  *	-s	Use sequential instead of healing reconstruction for resilver.
  *	-o	Set property=value.
- *	-w	Wait for resilvering to complete before returning
+ *	-w	Wait for resilvering (mirror) or expansion (raidz) to complete
+ *		before returning.
  *
- * Attach <new_device> to the mirror containing <device>.  If <device> is not
- * part of a mirror, then <device> will be transformed into a mirror of
- * <device> and <new_device>.  In either case, <new_device> will begin life
- * with a DTL of [0, now], and will immediately begin to resilver itself.
+ * Attach <new_device> to a <device> or <vdev>, where the vdev can be of type
+ * mirror or raidz. If <device> is not part of a mirror, then <device> will
+ * be transformed into a mirror of <device> and <new_device>. When a mirror
+ * is involved, <new_device> will begin life with a DTL of [0, now], and will
+ * immediately begin to resilver itself. For the raidz case, a expansion will
+ * commence and reflow the raidz data across all the disks including the
+ * <new_device>.
  */
 int
 zpool_do_attach(int argc, char **argv)
@@ -8362,6 +8423,97 @@ print_removal_status(zpool_handle_t *zhp, pool_removal_stat_t *prs)
 	}
 }
 
+/*
+ * Print out detailed raidz expansion status.
+ */
+static void
+print_raidz_expand_status(zpool_handle_t *zhp, pool_raidz_expand_stat_t *pres)
+{
+	char copied_buf[7];
+
+	if (pres == NULL || pres->pres_state == DSS_NONE)
+		return;
+
+	/*
+	 * Determine name of vdev.
+	 */
+	nvlist_t *config = zpool_get_config(zhp, NULL);
+	nvlist_t *nvroot = fnvlist_lookup_nvlist(config,
+	    ZPOOL_CONFIG_VDEV_TREE);
+	nvlist_t **child;
+	uint_t children;
+	verify(nvlist_lookup_nvlist_array(nvroot, ZPOOL_CONFIG_CHILDREN,
+	    &child, &children) == 0);
+	assert(pres->pres_expanding_vdev < children);
+
+	printf_color(ANSI_BOLD, gettext("expand: "));
+
+	time_t start = pres->pres_start_time;
+	time_t end = pres->pres_end_time;
+	char *vname =
+	    zpool_vdev_name(g_zfs, zhp, child[pres->pres_expanding_vdev], 0);
+	zfs_nicenum(pres->pres_reflowed, copied_buf, sizeof (copied_buf));
+
+	/*
+	 * Expansion is finished or canceled.
+	 */
+	if (pres->pres_state == DSS_FINISHED) {
+		char time_buf[32];
+		secs_to_dhms(end - start, time_buf);
+
+		(void) printf(gettext("expanded %s-%u copied %s in %s, "
+		    "on %s"), vname, (int)pres->pres_expanding_vdev,
+		    copied_buf, time_buf, ctime((time_t *)&end));
+	} else {
+		char examined_buf[7], total_buf[7], rate_buf[7];
+		uint64_t copied, total, elapsed, secs_left;
+		double fraction_done;
+		uint_t rate;
+
+		assert(pres->pres_state == DSS_SCANNING);
+
+		/*
+		 * Expansion is in progress.
+		 */
+		(void) printf(gettext(
+		    "expansion of %s-%u in progress since %s"),
+		    vname, (int)pres->pres_expanding_vdev, ctime(&start));
+
+		copied = pres->pres_reflowed > 0 ? pres->pres_reflowed : 1;
+		total = pres->pres_to_reflow;
+		fraction_done = (double)copied / total;
+
+		/* elapsed time for this pass */
+		elapsed = time(NULL) - pres->pres_start_time;
+		elapsed = elapsed > 0 ? elapsed : 1;
+		rate = copied / elapsed;
+		rate = rate > 0 ? rate : 1;
+		secs_left = (total - copied) / rate;
+
+		zfs_nicenum(copied, examined_buf, sizeof (examined_buf));
+		zfs_nicenum(total, total_buf, sizeof (total_buf));
+		zfs_nicenum(rate, rate_buf, sizeof (rate_buf));
+
+		/*
+		 * do not print estimated time if hours_left is more than
+		 * 30 days
+		 */
+		(void) printf(gettext("\t%s / %s copied at %s/s, %.2f%% done"),
+		    examined_buf, total_buf, rate_buf, 100 * fraction_done);
+		if (pres->pres_waiting_for_resilver) {
+			(void) printf(gettext(", paused for resilver or "
+			    "clear\n"));
+		} else if (secs_left < (30 * 24 * 3600)) {
+			char time_buf[32];
+			secs_to_dhms(secs_left, time_buf);
+			(void) printf(gettext(", %s to go\n"), time_buf);
+		} else {
+			(void) printf(gettext(
+			    ", (copy is slow, no estimated time)\n"));
+		}
+	}
+	free(vname);
+}
 static void
 print_checkpoint_status(pool_checkpoint_stat_t *pcs)
 {
@@ -8939,18 +9091,23 @@ status_callback(zpool_handle_t *zhp, void *data)
 		uint64_t nerr;
 		nvlist_t **spares, **l2cache;
 		uint_t nspares, nl2cache;
-		pool_checkpoint_stat_t *pcs = NULL;
-		pool_removal_stat_t *prs = NULL;
 
 		print_scan_status(zhp, nvroot);
 
+		pool_removal_stat_t *prs = NULL;
 		(void) nvlist_lookup_uint64_array(nvroot,
 		    ZPOOL_CONFIG_REMOVAL_STATS, (uint64_t **)&prs, &c);
 		print_removal_status(zhp, prs);
 
+		pool_checkpoint_stat_t *pcs = NULL;
 		(void) nvlist_lookup_uint64_array(nvroot,
 		    ZPOOL_CONFIG_CHECKPOINT_STATS, (uint64_t **)&pcs, &c);
 		print_checkpoint_status(pcs);
+
+		pool_raidz_expand_stat_t *pres = NULL;
+		(void) nvlist_lookup_uint64_array(nvroot,
+		    ZPOOL_CONFIG_RAIDZ_EXPAND_STATS, (uint64_t **)&pres, &c);
+		print_raidz_expand_status(zhp, pres);
 
 		cbp->cb_namewidth = max_width(zhp, nvroot, 0, 0,
 		    cbp->cb_name_flags | VDEV_NAME_TYPE_ID);
@@ -8999,9 +9156,11 @@ status_callback(zpool_handle_t *zhp, void *data)
 				(void) printf(gettext(
 				    "errors: No known data errors\n"));
 			} else if (!cbp->cb_verbose) {
+				color_start(ANSI_RED);
 				(void) printf(gettext("errors: %llu data "
 				    "errors, use '-v' for a list\n"),
 				    (u_longlong_t)nerr);
+				color_end();
 			} else {
 				print_error_log(zhp);
 			}
@@ -9022,6 +9181,7 @@ status_callback(zpool_handle_t *zhp, void *data)
  *              [pool] [interval [count]]
  *
  *	-c CMD	For each vdev, run command CMD
+ *	-e	Display only unhealthy vdevs
  *	-i	Display vdev initialization status.
  *	-g	Display guid for individual vdev name.
  *	-L	Follow links when resolving vdev path name.
@@ -9053,7 +9213,7 @@ zpool_do_status(int argc, char **argv)
 	};
 
 	/* check options */
-	while ((c = getopt_long(argc, argv, "c:igLpPsvxDtT:", long_options,
+	while ((c = getopt_long(argc, argv, "c:eigLpPsvxDtT:", long_options,
 	    NULL)) != -1) {
 		switch (c) {
 		case 'c':
@@ -9079,6 +9239,9 @@ zpool_do_status(int argc, char **argv)
 				exit(1);
 			}
 			cmd = optarg;
+			break;
+		case 'e':
+			cb.cb_print_unhealthy = B_TRUE;
 			break;
 		case 'i':
 			cb.cb_print_vdev_init = B_TRUE;
@@ -9167,6 +9330,7 @@ zpool_do_status(int argc, char **argv)
 		if (count != 0 && --count == 0)
 			break;
 
+		(void) fflush(stdout);
 		(void) fsleep(interval);
 	}
 
@@ -10919,8 +11083,9 @@ print_wait_status_row(wait_data_t *wd, zpool_handle_t *zhp, int row)
 	pool_checkpoint_stat_t *pcs = NULL;
 	pool_scan_stat_t *pss = NULL;
 	pool_removal_stat_t *prs = NULL;
+	pool_raidz_expand_stat_t *pres = NULL;
 	const char *const headers[] = {"DISCARD", "FREE", "INITIALIZE",
-	    "REPLACE", "REMOVE", "RESILVER", "SCRUB", "TRIM"};
+	    "REPLACE", "REMOVE", "RESILVER", "SCRUB", "TRIM", "RAIDZ_EXPAND"};
 	int col_widths[ZPOOL_WAIT_NUM_ACTIVITIES];
 
 	/* Calculate the width of each column */
@@ -10982,6 +11147,13 @@ print_wait_status_row(wait_data_t *wd, zpool_handle_t *zhp, int row)
 		    vdev_activity_top_remaining(nvroot);
 	}
 
+	(void) nvlist_lookup_uint64_array(nvroot,
+	    ZPOOL_CONFIG_RAIDZ_EXPAND_STATS, (uint64_t **)&pres, &c);
+	if (pres != NULL && pres->pres_state == DSS_SCANNING) {
+		int64_t rem = pres->pres_to_reflow - pres->pres_reflowed;
+		bytes_rem[ZPOOL_WAIT_RAIDZ_EXPAND] = rem;
+	}
+
 	bytes_rem[ZPOOL_WAIT_INITIALIZE] =
 	    vdev_activity_remaining(nvroot, ZPOOL_WAIT_INITIALIZE);
 	bytes_rem[ZPOOL_WAIT_TRIM] =
@@ -11008,11 +11180,12 @@ print_wait_status_row(wait_data_t *wd, zpool_handle_t *zhp, int row)
 		if (!wd->wd_enabled[i])
 			continue;
 
-		if (wd->wd_exact)
+		if (wd->wd_exact) {
 			(void) snprintf(buf, sizeof (buf), "%" PRIi64,
 			    bytes_rem[i]);
-		else
+		} else {
 			zfs_nicenum(bytes_rem[i], buf, sizeof (buf));
+		}
 
 		if (wd->wd_scripted)
 			(void) printf(i == 0 ? "%s" : "\t%s", buf);
@@ -11118,7 +11291,8 @@ zpool_do_wait(int argc, char **argv)
 			for (char *tok; (tok = strsep(&optarg, ",")); ) {
 				static const char *const col_opts[] = {
 				    "discard", "free", "initialize", "replace",
-				    "remove", "resilver", "scrub", "trim" };
+				    "remove", "resilver", "scrub", "trim",
+				    "raidz_expand" };
 
 				for (i = 0; i < ARRAY_SIZE(col_opts); ++i)
 					if (strcmp(tok, col_opts[i]) == 0) {

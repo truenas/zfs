@@ -431,6 +431,12 @@ vdev_prop_init(void)
 	zprop_register_number(VDEV_PROP_IO_T, "io_t", UINT64_MAX,
 	    PROP_DEFAULT, ZFS_TYPE_VDEV, "<seconds>", "IO_T", B_FALSE,
 	    sfeatures);
+	zprop_register_number(VDEV_PROP_SLOW_IO_N, "slow_io_n", UINT64_MAX,
+	    PROP_DEFAULT, ZFS_TYPE_VDEV, "<events>", "SLOW_IO_N", B_FALSE,
+	    sfeatures);
+	zprop_register_number(VDEV_PROP_SLOW_IO_T, "slow_io_t", UINT64_MAX,
+	    PROP_DEFAULT, ZFS_TYPE_VDEV, "<seconds>", "SLOW_IO_T", B_FALSE,
+	    sfeatures);
 
 	/* default index (boolean) properties */
 	zprop_register_index(VDEV_PROP_REMOVING, "removing", 0,
@@ -439,6 +445,9 @@ vdev_prop_init(void)
 	zprop_register_index(VDEV_PROP_ALLOCATING, "allocating", 1,
 	    PROP_DEFAULT, ZFS_TYPE_VDEV, "on | off", "ALLOCATING",
 	    boolean_na_table, sfeatures);
+	zprop_register_index(VDEV_PROP_RAIDZ_EXPANDING, "raidz_expanding", 0,
+	    PROP_READONLY, ZFS_TYPE_VDEV, "on | off", "RAIDZ_EXPANDING",
+	    boolean_table, sfeatures);
 
 	/* default index properties */
 	zprop_register_index(VDEV_PROP_FAILFAST, "failfast", B_TRUE,

@@ -104,7 +104,7 @@ typedef struct taskq {
 	/* list node for the cpu hotplug callback */
 	struct hlist_node	tq_hp_cb_node;
 	boolean_t		tq_hp_support;
-	unsigned long		lastshouldstop; /* when to purge dynamic */
+	unsigned long		lastspawnstop;	/* when to purge dynamic */
 } taskq_t;
 
 typedef struct taskq_ent {
@@ -150,6 +150,8 @@ extern void taskq_dispatch_ent(taskq_t *, task_func_t, void *, uint_t,
 extern int taskq_empty_ent(taskq_ent_t *);
 extern void taskq_init_ent(taskq_ent_t *);
 extern taskq_t *taskq_create(const char *, int, pri_t, int, int, uint_t);
+extern taskq_t *taskq_create_synced(const char *, int, pri_t, int, int, uint_t,
+    kthread_t ***);
 extern void taskq_destroy(taskq_t *);
 extern void taskq_wait_id(taskq_t *, taskqid_t);
 extern void taskq_wait_outstanding(taskq_t *, taskqid_t);

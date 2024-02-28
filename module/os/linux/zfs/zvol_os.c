@@ -387,7 +387,7 @@ zvol_discard(zv_request_t *zvr)
 	if (error != 0) {
 		dmu_tx_abort(tx);
 	} else {
-		zvol_log_truncate(zv, tx, start, size, B_TRUE);
+		zvol_log_truncate(zv, tx, start, size);
 		dmu_tx_commit(tx);
 		error = dmu_free_long_range(zv->zv_objset,
 		    ZVOL_OBJ, start, size);
@@ -1199,7 +1199,7 @@ zvol_alloc(dev_t dev, const char *name)
 	zso->zvo_queue->queuedata = zv;
 	zso->zvo_dev = dev;
 	zv->zv_open_count = 0;
-	strlcpy(zv->zv_name, name, MAXNAMELEN);
+	strlcpy(zv->zv_name, name, sizeof (zv->zv_name));
 
 	zfs_rangelock_init(&zv->zv_rangelock, NULL, NULL);
 	rw_init(&zv->zv_suspend_lock, NULL, RW_DEFAULT, NULL);

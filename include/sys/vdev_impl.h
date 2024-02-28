@@ -22,6 +22,7 @@
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2011, 2020 by Delphix. All rights reserved.
  * Copyright (c) 2017, Intel Corporation.
+ * Copyright (c) 2023, Klara Inc.
  */
 
 #ifndef _SYS_VDEV_IMPL_H
@@ -72,7 +73,7 @@ typedef void	vdev_fini_func_t(vdev_t *vd);
 typedef int	vdev_open_func_t(vdev_t *vd, uint64_t *size, uint64_t *max_size,
     uint64_t *ashift, uint64_t *pshift);
 typedef void	vdev_close_func_t(vdev_t *vd);
-typedef uint64_t vdev_asize_func_t(vdev_t *vd, uint64_t psize);
+typedef uint64_t vdev_asize_func_t(vdev_t *vd, uint64_t psize, uint64_t txg);
 typedef uint64_t vdev_min_asize_func_t(vdev_t *vd);
 typedef uint64_t vdev_min_alloc_func_t(vdev_t *vd);
 typedef void	vdev_io_start_func_t(zio_t *zio);
@@ -281,6 +282,7 @@ struct vdev {
 	uint64_t	vdev_noalloc;	/* device is passivated?	*/
 	uint64_t	vdev_removing;	/* device is being removed?	*/
 	uint64_t	vdev_failfast;	/* device failfast setting	*/
+	boolean_t	vdev_rz_expanding; /* raidz is being expanded?	*/
 	boolean_t	vdev_ishole;	/* is a hole in the namespace	*/
 	uint64_t	vdev_top_zap;
 	vdev_alloc_bias_t vdev_alloc_bias; /* metaslab allocation bias	*/
@@ -453,12 +455,14 @@ struct vdev {
 	zfs_ratelimit_t vdev_checksum_rl;
 
 	/*
-	 * Checksum and IO thresholds for tuning ZED
+	 * Vdev properties for tuning ZED
 	 */
 	uint64_t	vdev_checksum_n;
 	uint64_t	vdev_checksum_t;
 	uint64_t	vdev_io_n;
 	uint64_t	vdev_io_t;
+	uint64_t	vdev_slow_io_n;
+	uint64_t	vdev_slow_io_t;
 };
 
 #define	VDEV_PAD_SIZE		(8 << 10)
@@ -536,6 +540,7 @@ typedef struct vdev_label {
 /*
  * Size of embedded boot loader region on each label.
  * The total size of the first two labels plus the boot area is 4MB.
+ * On RAIDZ, this space is overwritten during RAIDZ expansion.
  */
 #define	VDEV_BOOT_SIZE		(7ULL << 19)			/* 3.5M */
 
@@ -608,7 +613,7 @@ extern vdev_ops_t vdev_indirect_ops;
  */
 extern void vdev_default_xlate(vdev_t *vd, const range_seg64_t *logical_rs,
     range_seg64_t *physical_rs, range_seg64_t *remain_rs);
-extern uint64_t vdev_default_asize(vdev_t *vd, uint64_t psize);
+extern uint64_t vdev_default_asize(vdev_t *vd, uint64_t psize, uint64_t txg);
 extern uint64_t vdev_default_min_asize(vdev_t *vd);
 extern uint64_t vdev_get_min_asize(vdev_t *vd);
 extern void vdev_set_min_asize(vdev_t *vd);

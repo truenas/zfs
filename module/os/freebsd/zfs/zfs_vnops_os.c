@@ -244,9 +244,15 @@ zfs_open(vnode_t **vpp, int flag, cred_t *cr)
 		return (SET_ERROR(EPERM));
 	}
 
-	/* Keep a count of the synchronous opens in the znode */
-	if (flag & O_SYNC)
-		atomic_inc_32(&zp->z_sync_cnt);
+	/*
+	 * Keep a count of the synchronous opens in the znode.  On first
+	 * synchronous open we must convert all previous async transactions
+	 * into sync to keep correct ordering.
+	 */
+	if (flag & O_SYNC) {
+		if (atomic_inc_32_nv(&zp->z_sync_cnt) == 1)
+			zil_async_to_sync(zfsvfs->z_log, zp->z_id);
+	}
 
 	zfs_exit(zfsvfs, FTAG);
 	return (0);
@@ -1869,10 +1875,8 @@ zfs_readdir(vnode_t *vp, zfs_uio_t *uio, cred_t *cr, int *eofp,
 
 		ASSERT3S(outcount, <=, bufsize);
 
-		/* Prefetch znode */
 		if (prefetch)
-			dmu_prefetch(os, objnum, 0, 0, 0,
-			    ZIO_PRIORITY_SYNC_READ);
+			dmu_prefetch_dnode(os, objnum, ZIO_PRIORITY_SYNC_READ);
 
 		/*
 		 * Move to the next entry, fill in the previous offset.
@@ -2007,6 +2011,8 @@ zfs_getattr(vnode_t *vp, vattr_t *vap, int flags, cred_t *cr)
 	vap->va_size = zp->z_size;
 	if (vp->v_type == VBLK || vp->v_type == VCHR)
 		vap->va_rdev = zfs_cmpldev(rdev);
+	else
+		vap->va_rdev = 0;
 	vap->va_gen = zp->z_gen;
 	vap->va_flags = 0;	/* FreeBSD: Reset chflags(2) flags. */
 	vap->va_filerev = zp->z_seq;
@@ -4203,6 +4209,10 @@ zfs_putpages(struct vnode *vp, vm_page_t *ma, size_t len, int flags,
 	}
 	zfs_vmobject_wunlock(object);
 
+	boolean_t commit = (flags & (zfs_vm_pagerput_sync |
+	    zfs_vm_pagerput_inval)) != 0 ||
+	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS;
+
 	if (ncount == 0)
 		goto out;
 
@@ -4255,7 +4265,7 @@ zfs_putpages(struct vnode *vp, vm_page_t *ma, size_t len, int flags,
 		 * but that would make the locking messier
 		 */
 		zfs_log_write(zfsvfs->z_log, tx, TX_WRITE, zp, off,
-		    len, 0, NULL, NULL);
+		    len, commit, NULL, NULL);
 
 		zfs_vmobject_wlock(object);
 		for (i = 0; i < ncount; i++) {
@@ -4270,8 +4280,7 @@ zfs_putpages(struct vnode *vp, vm_page_t *ma, size_t len, int flags,
 
 out:
 	zfs_rangelock_exit(lr);
-	if ((flags & (zfs_vm_pagerput_sync | zfs_vm_pagerput_inval)) != 0 ||
-	    zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+	if (commit)
 		zil_commit(zfsvfs->z_log, zp->z_id);
 
 	dataset_kstats_update_write_kstats(&zfsvfs->z_kstat, len);
