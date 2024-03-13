@@ -59,6 +59,7 @@ static unsigned long zvol_max_discard_blocks = 16384;
  * to utilize more threads for small files but may affect prefetch hits.
  */
 #define	ZVOL_TASKQ_OFFSET_SHIFT 29
+static unsigned int zvol_use_single_taskq = 0;
 
 #ifndef HAVE_BLKDEV_GET_ERESTARTSYS
 static unsigned int zvol_open_timeout_ms = 1000;
@@ -545,15 +546,17 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, struct request *rq,
 	zv_request_task_t *task;
 	zv_taskq_t *ztqs = &zvol_taskqs;
 	uint_t blk_mq_hw_queue = 0;
-	uint_t tq_idx;
+	uint_t tq_idx = 0;
 	uint_t taskq_hash;
 #ifdef HAVE_BLK_MQ
 	if (rq)
 		blk_mq_hw_queue = rq->mq_hctx->queue_num;
 #endif
-	taskq_hash = cityhash4((uintptr_t)zv, offset >> ZVOL_TASKQ_OFFSET_SHIFT,
-	    blk_mq_hw_queue, 0);
-	tq_idx = taskq_hash % ztqs->tqs_cnt;
+	if (zvol_use_single_taskq == 0) {
+		taskq_hash = cityhash4((uintptr_t)zv, offset >> ZVOL_TASKQ_OFFSET_SHIFT,
+		    blk_mq_hw_queue, 0);
+		tq_idx = taskq_hash % ztqs->tqs_cnt;
+	}
 
 	if (rw == WRITE) {
 		if (unlikely(zv->zv_flags & ZVOL_RDONLY)) {
@@ -1611,9 +1614,12 @@ zvol_init(void)
 	 * 256     16      16       256
 	 */
 	zv_taskq_t *ztqs = &zvol_taskqs;
-	uint_t num_tqs = 1 + num_online_cpus() / 6;
-	while (num_tqs * num_tqs > zvol_actual_threads)
-		num_tqs--;
+	uint_t num_tqs = 1;
+	if (zvol_use_single_taskq == 0) {
+		num_tqs = 1 + num_online_cpus() / 6;
+		while (num_tqs * num_tqs > zvol_actual_threads)
+			num_tqs--;
+	}
 	uint_t per_tq_thread = zvol_actual_threads / num_tqs;
 	if (per_tq_thread * num_tqs < zvol_actual_threads)
 		per_tq_thread++;
@@ -1697,6 +1703,12 @@ MODULE_PARM_DESC(zvol_major, "Major number for zvol device");
 module_param(zvol_threads, uint, 0444);
 MODULE_PARM_DESC(zvol_threads, "Number of threads to handle I/O requests. Set"
     "to 0 to use all active CPUs");
+
+module_param(zvol_blk_mq_threads, uint, 0444);
+MODULE_PARM_DESC(zvol_blk_mq_threads, "zvol_blk_mq_threads");
+
+module_param(zvol_use_single_taskq, uint, 0444);
+MODULE_PARM_DESC(zvol_use_single_taskq, "Debugging Purpose: Single taskq");
 
 module_param(zvol_request_sync, uint, 0644);
 MODULE_PARM_DESC(zvol_request_sync, "Synchronously handle bio requests");
