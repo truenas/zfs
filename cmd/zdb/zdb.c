@@ -88,6 +88,7 @@
 
 #include <libnvpair.h>
 #include <libzutil.h>
+#include <libzfs.h>
 
 #include <libzdb.h>
 
@@ -123,6 +124,7 @@ static range_tree_t *mos_refd_objs;
 static spa_t *spa = NULL;
 static objset_t *os = NULL;
 static boolean_t kernel_init_done = B_FALSE;
+static libzfs_handle_t *g_zfs;
 
 static void snprintf_blkptr_compact(char *, size_t, const blkptr_t *,
     boolean_t);
@@ -3245,6 +3247,9 @@ zdb_exit(int reason)
 	}
 
 	fuid_table_destroy();
+
+	if (g_zfs)
+		libzfs_fini(g_zfs);
 
 	if (kernel_init_done)
 		kernel_fini();
@@ -8899,6 +8904,8 @@ main(int argc, char **argv)
 	char *spa_config_path_env, *objset_str;
 	boolean_t target_is_spa = B_TRUE, dataset_lookup = B_FALSE;
 	nvlist_t *cfg = NULL;
+	boolean_t force_import = B_FALSE;
+	boolean_t config_path_console = B_FALSE;
 
 	dprintf_setup(&argc, argv);
 
@@ -9052,6 +9059,7 @@ main(int argc, char **argv)
 			}
 			break;
 		case 'U':
+			config_path_console = B_TRUE;
 			spa_config_path = optarg;
 			if (spa_config_path[0] != '/') {
 				(void) fprintf(stderr,
@@ -9129,6 +9137,31 @@ main(int argc, char **argv)
 	if (argc < 2 && dump_opt['R'])
 		usage();
 
+	target = argv[0];
+
+	/*
+	 * Automate cachefile
+	 */
+	if (!spa_config_path_env && !config_path_console && target) {
+		zpool_handle_t *zhp;
+		char prop[ZFS_MAXPROPLEN];
+		zprop_source_t srctype = ZPROP_SRC_LOCAL;
+		if ((g_zfs = libzfs_init()) && (zhp = zpool_open_canfail(g_zfs,
+		    target)) && !zpool_get_prop(zhp, ZPOOL_PROP_CACHEFILE, prop,
+		    sizeof (prop), &srctype, B_FALSE) && prop[0] != '\0') {
+			if (prop[0] == '/') {
+				if (access(prop, F_OK) == 0)
+					spa_config_path = prop;
+				else
+					force_import = B_TRUE;
+			} else if ((strcmp(prop, "-") == 0 &&
+			    access(ZPOOL_CACHE, F_OK) != 0) ||
+			    strcmp(prop, "none") == 0) {
+				force_import = B_TRUE;
+			}
+		}
+	}
+
 	kernel_init(SPA_MODE_READ);
 	kernel_init_done = B_TRUE;
 
@@ -9168,7 +9201,6 @@ main(int argc, char **argv)
 		fatal("internal error: %s", strerror(ENOMEM));
 
 	error = 0;
-	target = argv[0];
 
 	if (strpbrk(target, "/@") != NULL) {
 		size_t targetlen;
@@ -9214,8 +9246,16 @@ main(int argc, char **argv)
 		target_pool = target;
 	}
 
-	if (dump_opt['e']) {
+	if (dump_opt['e'] || force_import) {
 		importargs_t args = { 0 };
+
+		/*
+		 * If path is not provided, search in /dev
+		 */
+		if (searchdirs == NULL && nsearch == 0) {
+			searchdirs = umem_alloc(sizeof (char *), UMEM_NOFAIL);
+			searchdirs[nsearch++] = (char *)ZFS_DEVDIR;
+		}
 
 		args.paths = nsearch;
 		args.path = searchdirs;
@@ -9494,6 +9534,9 @@ fini:
 	fuid_table_destroy();
 
 	dump_debug_buffer();
+
+	if (g_zfs)
+		libzfs_fini(g_zfs);
 
 	if (kernel_init_done)
 		kernel_fini();
