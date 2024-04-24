@@ -431,7 +431,7 @@ get_usage(zpool_help_t idx)
 	case HELP_EVENTS:
 		return (gettext("\tevents [-vHf [pool] | -c]\n"));
 	case HELP_GET:
-		return (gettext("\tget [-Hp] [-o \"all\" | field[,...]] "
+		return (gettext("\tget [-jHp] [-o \"all\" | field[,...]] "
 		    "<\"all\" | property[,...]> <pool> ...\n"));
 	case HELP_SET:
 		return (gettext("\tset <property=value> <pool>\n"
@@ -886,6 +886,89 @@ print_spare_list(nvlist_t *nv, int indent)
 		vname = zpool_vdev_name(g_zfs, NULL, child[c], 0);
 		(void) printf("\t%*s%s\n", indent + 2, "", vname);
 		free(vname);
+	}
+}
+
+/*
+ * Generates an nvlist with output version for every command based on params.
+ * Purpose of this is to add a version of JSON output, considering the schema
+ * format might be updated for each command in future.
+ *
+ * Schema:
+ *
+ * "output_version": {
+ *    "command": string,
+ *    "vers_major": integer,
+ *    "vers_minor": integer,
+ *  }
+ */
+static nvlist_t *
+zpool_json_schema(int maj_v, int min_v)
+{
+	char cmd[MAX_CMD_LEN];
+	nvlist_t *sch = fnvlist_alloc();
+	nvlist_t *ov = fnvlist_alloc();
+
+	snprintf(cmd, MAX_CMD_LEN, "zpool %s", current_command->name);
+	fnvlist_add_string(ov, "command", cmd);
+	fnvlist_add_uint32(ov, "vers_major", maj_v);
+	fnvlist_add_uint32(ov, "vers_minor", min_v);
+	fnvlist_add_nvlist(sch, "output_version", ov);
+	fnvlist_free(ov);
+	return (sch);
+}
+
+static void
+fill_pool_info(nvlist_t *list, zpool_handle_t *zhp, boolean_t addtype)
+{
+	char value[ZFS_MAXPROPLEN];
+	uint64_t txg;
+	nvlist_t *config = zpool_get_config(zhp, NULL);
+	uint64_t guid = fnvlist_lookup_uint64(config, ZPOOL_CONFIG_POOL_GUID);
+
+	fnvlist_add_string(list, "name", zpool_get_name(zhp));
+	if (addtype)
+		fnvlist_add_string(list, "type", "POOL");
+	fnvlist_add_string(list, "state", zpool_get_state_str(zhp));
+	snprintf(value, ZFS_MAXPROPLEN, "%llu", (u_longlong_t)guid);
+	fnvlist_add_string(list, "guid", value);
+	if (nvlist_lookup_uint64(config, "txg", &txg) == 0) {
+		snprintf(value, ZFS_MAXPROPLEN, "%llu", (u_longlong_t)txg);
+		fnvlist_add_string(list, "txg", value);
+	}
+	fnvlist_add_string(list, "spa_version", SPA_VERSION_STRING);
+	fnvlist_add_string(list, "zpl_version", ZPL_VERSION_STRING);
+}
+
+static void
+fill_vdev_info(nvlist_t *list, zpool_handle_t *zhp, char *name)
+{
+	boolean_t spare, l2c, log;
+	const char *path, *phys, *devid;
+	nvlist_t *nvdev = zpool_find_vdev(zhp, name, &spare, &l2c, &log);
+
+	fnvlist_add_string(list, "name", name);
+	fnvlist_add_string(list, "type", "VDEV");
+	if (nvdev) {
+		const char *type = fnvlist_lookup_string(nvdev,
+		    ZPOOL_CONFIG_TYPE);
+		if (type)
+			fnvlist_add_string(list, "vdev_type", type);
+		uint64_t guid = fnvlist_lookup_uint64(nvdev, ZPOOL_CONFIG_GUID);
+		if (guid) {
+			char buf[ZFS_MAXPROPLEN];
+			snprintf(buf, ZFS_MAXPROPLEN, "%llu", (u_longlong_t)guid);
+			fnvlist_add_string(list, "guid", buf);
+		}
+
+		if (nvlist_lookup_string(nvdev, ZPOOL_CONFIG_PATH, &path) == 0)
+			fnvlist_add_string(list, "path", path);
+		if (nvlist_lookup_string(nvdev, ZPOOL_CONFIG_PHYS_PATH,
+		    &phys) == 0)
+			fnvlist_add_string(list, "phys_path", phys);
+		if (nvlist_lookup_string(nvdev, ZPOOL_CONFIG_DEVID,
+		    &devid) == 0)
+			fnvlist_add_string(list, "devid", devid);
 	}
 }
 
@@ -10119,35 +10202,6 @@ zpool_do_history(int argc, char **argv)
 	return (ret);
 }
 
-/*
- * Generates an nvlist with output version for every command based on params.
- * Purpose of this is to add a version of JSON output, considering the schema
- * format might be updated for each command in future.
- *
- * Schema:
- *
- * "output_version": {
- *    "command": string,
- *    "vers_major": integer,
- *    "vers_minor": integer,
- *  }
- */
-static nvlist_t *
-zpool_json_schema(int maj_v, int min_v)
-{
-	char cmd[MAX_CMD_LEN];
-	nvlist_t *sch = fnvlist_alloc();
-	nvlist_t *ov = fnvlist_alloc();
-
-	snprintf(cmd, MAX_CMD_LEN, "zpool %s", current_command->name);
-	fnvlist_add_string(ov, "command", cmd);
-	fnvlist_add_uint32(ov, "vers_major", maj_v);
-	fnvlist_add_uint32(ov, "vers_minor", min_v);
-	fnvlist_add_nvlist(sch, "output_version", ov);
-
-	return (sch);
-}
-
 typedef struct ev_opts {
 	int verbose;
 	int scripted;
@@ -10542,6 +10596,17 @@ get_callback_vdev(zpool_handle_t *zhp, char *vdevname, void *data)
 	zprop_get_cbdata_t *cbp = (zprop_get_cbdata_t *)data;
 	char value[ZFS_MAXPROPLEN];
 	zprop_source_t srctype;
+	nvlist_t *props, *item, *d;
+	props = item = d = NULL;
+
+	if (cbp->cb_json) {
+		d = fnvlist_lookup_nvlist(cbp->cb_jsobj, "data");
+		if (d == NULL) {
+			fprintf(stderr, "data obj not found.\n");
+			exit(1);
+		}
+		props = fnvlist_alloc();
+	}
 
 	for (zprop_list_t *pl = cbp->cb_proplist; pl != NULL;
 	    pl = pl->pl_next) {
@@ -10563,9 +10628,21 @@ get_callback_vdev(zpool_handle_t *zhp, char *vdevname, void *data)
 		if (zpool_get_vdev_prop(zhp, vdevname, pl->pl_prop,
 		    prop_name, value, sizeof (value), &srctype,
 		    cbp->cb_literal) == 0) {
-			zprop_print_one_property(vdevname, cbp, prop_name,
-			    value, srctype, NULL, NULL);
+			zprop_collect_property(vdevname, cbp, prop_name,
+			    value, srctype, NULL, NULL, props);
 		}
+	}
+
+	if (cbp->cb_json) {
+		if (!nvlist_empty(props)) {
+			item = fnvlist_alloc();
+			fill_vdev_info(item, zhp, vdevname);
+			fnvlist_add_nvlist(item, "properties", props);
+			fnvlist_add_nvlist(d, vdevname, item);
+			fnvlist_add_nvlist(cbp->cb_jsobj, "data", d);
+			fnvlist_free(item);
+		}
+		fnvlist_free(props);
 	}
 
 	return (0);
@@ -10609,8 +10686,18 @@ get_callback(zpool_handle_t *zhp, void *data)
 	zprop_source_t srctype;
 	zprop_list_t *pl;
 	int vid;
+	int err = 0;
+	nvlist_t *props, *item, *d;
+	props = item = d = NULL;
 
 	if (cbp->cb_type == ZFS_TYPE_VDEV) {
+		if (cbp->cb_json) {
+			nvlist_t *pool = fnvlist_alloc();
+			fill_pool_info(pool, zhp, B_FALSE);
+			fnvlist_add_nvlist(cbp->cb_jsobj, "pool", pool);
+			fnvlist_free(pool);
+		}
+
 		if (strcmp(cbp->cb_vdevs.cb_names[0], "all-vdevs") == 0) {
 			for_each_vdev(zhp, get_callback_vdev_cb, data);
 		} else {
@@ -10630,6 +10717,14 @@ get_callback(zpool_handle_t *zhp, void *data)
 		}
 	} else {
 		assert(cbp->cb_type == ZFS_TYPE_POOL);
+		if (cbp->cb_json) {
+			d = fnvlist_lookup_nvlist(cbp->cb_jsobj, "data");
+			if (d == NULL) {
+				fprintf(stderr, "data obj not found.\n");
+				exit(1);
+			}
+			props = fnvlist_alloc();
+		}
 		for (pl = cbp->cb_proplist; pl != NULL; pl = pl->pl_next) {
 			/*
 			 * Skip the special fake placeholder. This will also
@@ -10647,9 +10742,9 @@ get_callback(zpool_handle_t *zhp, void *data)
 				    value, sizeof (value), &srctype) != 0)
 					continue;
 
-				zprop_print_one_property(zpool_get_name(zhp),
-				    cbp, pl->pl_user_prop, value, srctype,
-				    NULL, NULL);
+				err = zprop_collect_property(
+				    zpool_get_name(zhp), cbp, pl->pl_user_prop,
+				    value, srctype, NULL, NULL, props);
 			} else if (pl->pl_prop == ZPROP_INVAL &&
 			    (zpool_prop_feature(pl->pl_user_prop) ||
 			    zpool_prop_unsupported(pl->pl_user_prop))) {
@@ -10658,10 +10753,10 @@ get_callback(zpool_handle_t *zhp, void *data)
 				if (zpool_prop_get_feature(zhp,
 				    pl->pl_user_prop, value,
 				    sizeof (value)) == 0) {
-					zprop_print_one_property(
+					err = zprop_collect_property(
 					    zpool_get_name(zhp), cbp,
 					    pl->pl_user_prop, value, srctype,
-					    NULL, NULL);
+					    NULL, NULL, props);
 				}
 			} else {
 				if (zpool_get_prop(zhp, pl->pl_prop, value,
@@ -10669,10 +10764,30 @@ get_callback(zpool_handle_t *zhp, void *data)
 				    cbp->cb_literal) != 0)
 					continue;
 
-				zprop_print_one_property(zpool_get_name(zhp),
-				    cbp, zpool_prop_to_name(pl->pl_prop),
-				    value, srctype, NULL, NULL);
+				err = zprop_collect_property(
+				    zpool_get_name(zhp), cbp,
+				    zpool_prop_to_name(pl->pl_prop),
+				    value, srctype, NULL, NULL, props);
 			}
+			if (err != 0)
+				return (err);
+		}
+
+		if (cbp->cb_json) {
+			if (!nvlist_empty(props)) {
+				char buf[256];
+				item = fnvlist_alloc();
+				fill_pool_info(item, zhp, B_TRUE);
+				fnvlist_add_nvlist(item, "properties", props);
+				uint64_t guid = fnvlist_lookup_uint64(
+				    zpool_get_config(zhp, NULL),
+				    ZPOOL_CONFIG_POOL_GUID);
+				snprintf(buf, 256, "%llu", (u_longlong_t)guid);
+				fnvlist_add_nvlist(d, buf, item);
+				fnvlist_add_nvlist(cbp->cb_jsobj, "data", d);
+				fnvlist_free(item);
+			}
+			fnvlist_free(props);
 		}
 	}
 
@@ -10700,6 +10815,7 @@ zpool_do_get(int argc, char **argv)
 	int c, i;
 	char *propstr = NULL;
 	char *vdev = NULL;
+	nvlist_t *data;
 
 	cb.cb_first = B_TRUE;
 
@@ -10716,13 +10832,20 @@ zpool_do_get(int argc, char **argv)
 	current_prop_type = cb.cb_type;
 
 	/* check options */
-	while ((c = getopt(argc, argv, ":Hpo:")) != -1) {
+	while ((c = getopt(argc, argv, ":jHpo:")) != -1) {
 		switch (c) {
 		case 'p':
 			cb.cb_literal = B_TRUE;
 			break;
 		case 'H':
 			cb.cb_scripted = B_TRUE;
+			break;
+		case 'j':
+			cb.cb_json = B_TRUE;
+			cb.cb_jsobj = zpool_json_schema(0, 1);
+			data = fnvlist_alloc();
+			fnvlist_add_nvlist(cb.cb_jsobj, "data", data);
+			fnvlist_free(data);
 			break;
 		case 'o':
 			memset(&cb.cb_columns, 0, sizeof (cb.cb_columns));
@@ -10845,6 +10968,9 @@ found:
 
 	ret = for_each_pool(argc, argv, B_TRUE, &cb.cb_proplist, cb.cb_type,
 	    cb.cb_literal, get_callback, &cb);
+
+	if (cb.cb_json)
+		zcmd_print_json(cb.cb_jsobj);
 
 	if (cb.cb_proplist == &fake_name)
 		zprop_free_list(fake_name.pl_next);
