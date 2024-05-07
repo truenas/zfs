@@ -1664,6 +1664,7 @@ vdev_metaslab_fini(vdev_t *vd)
 typedef struct vdev_probe_stats {
 	boolean_t	vps_readable;
 	boolean_t	vps_writeable;
+	boolean_t	vps_zio_done_probe;
 	int		vps_flags;
 } vdev_probe_stats_t;
 
@@ -1709,6 +1710,17 @@ vdev_probe_done(zio_t *zio)
 			(void) zfs_ereport_post(FM_EREPORT_ZFS_PROBE_FAILURE,
 			    spa, vd, NULL, NULL, 0);
 			zio->io_error = SET_ERROR(ENXIO);
+
+			/*
+			 * If this probe was initiated from zio pipeline, then
+			 * change the state in a spa_async_request. Probes that
+			 * were initiated from a vdev_open can change the state
+			 * as part of the open call.
+			 */
+			if (vps->vps_zio_done_probe) {
+				vd->vdev_fault_wanted = B_TRUE;
+				spa_async_request(spa, SPA_ASYNC_FAULT_VDEV);
+			}
 		}
 
 		mutex_enter(&vd->vdev_probe_lock);
@@ -1759,6 +1771,7 @@ vdev_probe(vdev_t *vd, zio_t *zio)
 
 		vps->vps_flags = ZIO_FLAG_CANFAIL | ZIO_FLAG_PROBE |
 		    ZIO_FLAG_DONT_AGGREGATE | ZIO_FLAG_TRYHARD;
+		vps->vps_zio_done_probe = (zio != NULL);
 
 		if (spa_config_held(spa, SCL_ZIO, RW_WRITER)) {
 			/*
@@ -1785,15 +1798,6 @@ vdev_probe(vdev_t *vd, zio_t *zio)
 		vd->vdev_probe_zio = pio = zio_null(NULL, spa, vd,
 		    vdev_probe_done, vps,
 		    vps->vps_flags | ZIO_FLAG_DONT_PROPAGATE);
-
-		/*
-		 * We can't change the vdev state in this context, so we
-		 * kick off an async task to do it on our behalf.
-		 */
-		if (zio != NULL) {
-			vd->vdev_probe_wanted = B_TRUE;
-			spa_async_request(spa, SPA_ASYNC_PROBE);
-		}
 	}
 
 	if (zio != NULL)
@@ -4924,11 +4928,11 @@ vdev_stat_update(zio_t *zio, uint64_t psize)
 
 			/*
 			 * TRIM ops and bytes are reported to user space as
-			 * ZIO_TYPE_IOCTL.  This is done to preserve the
+			 * ZIO_TYPE_FLUSH.  This is done to preserve the
 			 * vdev_stat_t structure layout for user space.
 			 */
 			if (type == ZIO_TYPE_TRIM)
-				vs_type = ZIO_TYPE_IOCTL;
+				vs_type = ZIO_TYPE_FLUSH;
 
 			/*
 			 * Solely for the purposes of 'zpool iostat -lqrw'
@@ -6239,12 +6243,12 @@ vdev_prop_get(vdev_t *vd, nvlist_t *innvl, nvlist_t *outnvl)
 			case VDEV_PROP_OPS_TRIM:
 				/*
 				 * TRIM ops and bytes are reported to user
-				 * space as ZIO_TYPE_IOCTL.  This is done to
+				 * space as ZIO_TYPE_FLUSH.  This is done to
 				 * preserve the vdev_stat_t structure layout
 				 * for user space.
 				 */
 				vdev_prop_add_list(outnvl, propname, NULL,
-				    vd->vdev_stat.vs_ops[ZIO_TYPE_IOCTL],
+				    vd->vdev_stat.vs_ops[ZIO_TYPE_FLUSH],
 				    ZPROP_SRC_NONE);
 				continue;
 			case VDEV_PROP_BYTES_NULL:
@@ -6275,12 +6279,12 @@ vdev_prop_get(vdev_t *vd, nvlist_t *innvl, nvlist_t *outnvl)
 			case VDEV_PROP_BYTES_TRIM:
 				/*
 				 * TRIM ops and bytes are reported to user
-				 * space as ZIO_TYPE_IOCTL.  This is done to
+				 * space as ZIO_TYPE_FLUSH.  This is done to
 				 * preserve the vdev_stat_t structure layout
 				 * for user space.
 				 */
 				vdev_prop_add_list(outnvl, propname, NULL,
-				    vd->vdev_stat.vs_bytes[ZIO_TYPE_IOCTL],
+				    vd->vdev_stat.vs_bytes[ZIO_TYPE_FLUSH],
 				    ZPROP_SRC_NONE);
 				continue;
 			case VDEV_PROP_REMOVING:
