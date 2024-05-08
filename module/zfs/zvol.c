@@ -377,7 +377,7 @@ zvol_set_volthreading(const char *name, boolean_t value)
 {
 	zvol_state_t *zv = zvol_find_by_name(name, RW_NONE);
 	if (zv == NULL)
-		return (ENOENT);
+		return (-1);
 	zv->zv_threading = value;
 	mutex_exit(&zv->zv_state_lock);
 	return (0);
@@ -965,7 +965,7 @@ zvol_prefetch_minors_impl(void *arg)
 	job->error = dmu_objset_own(dsname, DMU_OST_ZVOL, B_TRUE, B_TRUE,
 	    FTAG, &os);
 	if (job->error == 0) {
-		dmu_prefetch(os, ZVOL_OBJ, 0, 0, 0, ZIO_PRIORITY_SYNC_READ);
+		dmu_prefetch_dnode(os, ZVOL_OBJ, ZIO_PRIORITY_SYNC_READ);
 		dmu_objset_disown(os, B_TRUE, FTAG);
 	}
 }
