@@ -160,7 +160,7 @@ arc_lowmem(void *arg __unused, int howto __unused)
 		return;
 	to_free = (can_free >> arc_shrink_shift) - MIN(free_memory, 0);
 	DTRACE_PROBE2(arc__needfree, int64_t, free_memory, int64_t, to_free);
-	arc_reduce_target_size(to_free);
+	to_free = arc_reduce_target_size(to_free);
 
 	/*
 	 * It is unsafe to block here in arbitrary threads, because we can come
@@ -168,7 +168,7 @@ arc_lowmem(void *arg __unused, int howto __unused)
 	 * with ARC reclaim thread.
 	 */
 	if (curproc == pageproc)
-		arc_wait_for_eviction(to_free, B_FALSE);
+		arc_wait_for_eviction(to_free, B_FALSE, B_FALSE);
 }
 
 void

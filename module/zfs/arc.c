@@ -4408,13 +4408,19 @@ arc_flush(spa_t *spa, boolean_t retry)
 	(void) arc_flush_state(arc_uncached, guid, ARC_BUFC_METADATA, retry);
 }
 
-void
-arc_reduce_target_size(int64_t to_free)
+uint64_t
+arc_reduce_target_size(uint64_t to_free)
 {
 	uint64_t c = arc_c;
 
+	/*
+	 * Get the actual arc size even if we don't need it.  This updates
+	 * the aggsum lower bound estimate for arc_is_overflowing().
+	 */
+	uint64_t asize = aggsum_value(&arc_sums.arcstat_size);
+
 	if (c <= arc_c_min)
-		return;
+		return (0);
 
 	/*
 	 * All callers want the ARC to actually evict (at least) this much
@@ -4424,16 +4430,17 @@ arc_reduce_target_size(int64_t to_free)
 	 * immediately have arc_c < arc_size and therefore the arc_evict_zthr
 	 * will evict.
 	 */
-	uint64_t asize = aggsum_value(&arc_sums.arcstat_size);
-	if (asize < c)
-		to_free += c - asize;
-	arc_c = MAX((int64_t)c - to_free, (int64_t)arc_c_min);
+	c = MIN(c, MAX(asize, arc_c_min));
+	to_free = MIN(to_free, c - arc_c_min);
+	arc_c = c - to_free;
 
 	/* See comment in arc_evict_cb_check() on why lock+flag */
 	mutex_enter(&arc_evict_lock);
 	arc_evict_needed = B_TRUE;
 	mutex_exit(&arc_evict_lock);
 	zthr_wakeup(arc_evict_zthr);
+
+	return (to_free);
 }
 
 /*
@@ -4822,7 +4829,7 @@ arc_get_data_buf(arc_buf_hdr_t *hdr, uint64_t size, const void *tag)
  * of ARC behavior and settings.  See arc_lowmem_init().
  */
 void
-arc_wait_for_eviction(uint64_t amount, boolean_t use_reserve)
+arc_wait_for_eviction(uint64_t amount, boolean_t lax, boolean_t use_reserve)
 {
 	switch (arc_is_overflowing(use_reserve)) {
 	case ARC_OVF_NONE:
@@ -4838,11 +4845,14 @@ arc_wait_for_eviction(uint64_t amount, boolean_t use_reserve)
 		 * taking the global lock here every time without waiting for
 		 * the actual eviction creates a significant lock contention.
 		 */
-		if (!arc_evict_needed) {
-			arc_evict_needed = B_TRUE;
-			zthr_wakeup(arc_evict_zthr);
+		if (lax) {
+			if (!arc_evict_needed) {
+				arc_evict_needed = B_TRUE;
+				zthr_wakeup(arc_evict_zthr);
+			}
+			return;
 		}
-		return;
+		zfs_fallthrough;
 	case ARC_OVF_SEVERE:
 	default:
 	{
@@ -4919,7 +4929,7 @@ arc_get_data_impl(arc_buf_hdr_t *hdr, uint64_t size, const void *tag,
 	 * under arc_c.  See the comment above zfs_arc_eviction_pct.
 	 */
 	arc_wait_for_eviction(size * zfs_arc_eviction_pct / 100,
-	    alloc_flags & ARC_HDR_USE_RESERVE);
+	    B_TRUE, alloc_flags & ARC_HDR_USE_RESERVE);
 
 	arc_buf_contents_t type = arc_buf_type(hdr);
 	if (type == ARC_BUFC_METADATA) {
