@@ -9177,7 +9177,7 @@ main(int argc, char **argv)
 		usage();
 
 	target = argv[0];
-
+#if 0
 	/*
 	 * Automate cachefile
 	 */
@@ -9220,7 +9220,7 @@ main(int argc, char **argv)
 		nvlist_free(pnvl);
 		libzfs_core_fini();
 	}
-
+#endif
 	kernel_init(SPA_MODE_READ);
 	kernel_init_done = B_TRUE;
 
