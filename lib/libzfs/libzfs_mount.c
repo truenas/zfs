@@ -347,7 +347,7 @@ zfs_mount(zfs_handle_t *zhp, const char *options, int flags)
 	    flags))
 		return (0);
 
-	return (zfs_mount_at(zhp, options, flags, mountpoint));
+	return (zfs_mount_at(zhp, options, flags, mountpoint, B_TRUE));
 }
 
 /*
@@ -355,7 +355,7 @@ zfs_mount(zfs_handle_t *zhp, const char *options, int flags)
  */
 int
 zfs_mount_at(zfs_handle_t *zhp, const char *options, int flags,
-    const char *mountpoint)
+    const char *mountpoint, boolean_t add_mntpoint)
 {
 	struct stat buf;
 	char mntopts[MNT_LINE_MAX];
@@ -499,7 +499,7 @@ zfs_mount_at(zfs_handle_t *zhp, const char *options, int flags,
 	}
 
 	/* perform the mount */
-	rc = do_mount(zhp, mountpoint, mntopts, flags);
+	rc = do_mount(zhp, mountpoint, mntopts, flags, add_mntpoint);
 	if (rc) {
 		/*
 		 * Generic errors are nasty, but there are just way too many

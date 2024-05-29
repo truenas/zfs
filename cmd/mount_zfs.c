@@ -158,6 +158,7 @@ main(int argc, char **argv)
 	char dataset[PATH_MAX], *pdataset = dataset;
 	unsigned long mntflags = 0, zfsflags = 0, remount = 0;
 	int sloppy = 0, fake = 0, verbose = 0, nomtab = 0, zfsutil = 0;
+	boolean_t nomntpoint = B_FALSE;
 	int error, c;
 
 	(void) setlocale(LC_ALL, "");
@@ -167,7 +168,7 @@ main(int argc, char **argv)
 	opterr = 0;
 
 	/* check options */
-	while ((c = getopt_long(argc, argv, "sfnvo:h?", 0, 0)) != -1) {
+	while ((c = getopt_long(argc, argv, "sfnxvo:h?", 0, 0)) != -1) {
 		switch (c) {
 		case 's':
 			sloppy = 1;
@@ -177,6 +178,9 @@ main(int argc, char **argv)
 			break;
 		case 'n':
 			nomtab = 1;
+			break;
+		case 'x':
+			nomntpoint = B_TRUE;
 			break;
 		case 'v':
 			verbose++;
@@ -269,17 +273,18 @@ main(int argc, char **argv)
 		return (MOUNT_USAGE);
 	}
 
-	if (!zfsutil || sloppy ||
-	    libzfs_envvar_is_set("ZFS_MOUNT_HELPER")) {
-		zfs_adjust_mount_options(zhp, mntpoint, mntopts, mtabopt);
-	}
-
 	/* treat all snapshots as legacy mount points */
 	if (zfs_get_type(zhp) == ZFS_TYPE_SNAPSHOT)
 		(void) strlcpy(prop, ZFS_MOUNTPOINT_LEGACY, ZFS_MAXPROPLEN);
 	else
 		(void) zfs_prop_get(zhp, ZFS_PROP_MOUNTPOINT, prop,
 		    sizeof (prop), NULL, NULL, 0, B_FALSE);
+
+	if (!zfsutil || sloppy ||
+	    libzfs_envvar_is_set("ZFS_MOUNT_HELPER")) {
+		zfs_adjust_mount_options(zhp, mntpoint, mntopts,
+		    mtabopt, !nomntpoint);
+	}
 
 	/*
 	 * Fetch the max supported zfs version in case we get ENOTSUP
@@ -339,7 +344,8 @@ main(int argc, char **argv)
 	if (!fake) {
 		if (zfsutil && !sloppy &&
 		    !libzfs_envvar_is_set("ZFS_MOUNT_HELPER")) {
-			error = zfs_mount_at(zhp, mntopts, mntflags, mntpoint);
+
+			error = zfs_mount_at(zhp, mntopts, mntflags, mntpoint, !nomntpoint);
 			if (error) {
 				(void) fprintf(stderr, "zfs_mount_at() failed: "
 				    "%s", libzfs_error_description(g_zfs));

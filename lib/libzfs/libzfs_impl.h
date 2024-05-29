@@ -224,7 +224,7 @@ typedef struct differ_info {
 } differ_info_t;
 
 extern int do_mount(zfs_handle_t *zhp, const char *mntpt, const char *opts,
-    int flags);
+    int flags, boolean_t addmntpoint);
 extern int do_unmount(zfs_handle_t *zhp, const char *mntpt, int flags);
 extern int libzfs_load_module(void);
 extern int zpool_relabel_disk(libzfs_handle_t *hdl, const char *path,

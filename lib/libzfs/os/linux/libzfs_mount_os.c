@@ -278,7 +278,7 @@ zfs_selinux_setcontext(zfs_handle_t *zhp, zfs_prop_t zpt, const char *name,
 
 void
 zfs_adjust_mount_options(zfs_handle_t *zhp, const char *mntpoint,
-    char *mntopts, char *mtabopt)
+    char *mntopts, char *mtabopt, boolean_t add_mntpoint)
 {
 	char prop[ZFS_MAXPROPLEN];
 
@@ -307,7 +307,10 @@ zfs_adjust_mount_options(zfs_handle_t *zhp, const char *mntpoint,
 	}
 
 	/* A hint used to determine an auto-mounted snapshot mount point */
-	append_mntopt(MNTOPT_MNTPOINT, mntpoint, mntopts, NULL, B_FALSE);
+	if (add_mntpoint) {
+		append_mntopt(MNTOPT_MNTPOINT, mntpoint, mntopts, NULL,
+		    B_FALSE);
+	}
 }
 
 /*
@@ -327,7 +330,8 @@ zfs_adjust_mount_options(zfs_handle_t *zhp, const char *mntpoint,
  * make due with return value from the mount process.
  */
 int
-do_mount(zfs_handle_t *zhp, const char *mntpt, const char *opts, int flags)
+do_mount(zfs_handle_t *zhp, const char *mntpt, const char *opts, int flags,
+    boolean_t add_mntpoint)
 {
 	const char *src = zfs_get_name(zhp);
 	int error = 0;
@@ -342,7 +346,7 @@ do_mount(zfs_handle_t *zhp, const char *mntpt, const char *opts, int flags)
 			return (EINVAL);
 		}
 		strlcat(myopts, opts, MNT_LINE_MAX);
-		zfs_adjust_mount_options(zhp, mntpt, myopts, NULL);
+		zfs_adjust_mount_options(zhp, mntpt, myopts, NULL, add_mntpoint);
 		if (mount(src, mntpt, MNTTYPE_ZFS, mntflags, myopts)) {
 			return (errno);
 		}

@@ -920,7 +920,8 @@ _LIBZFS_H boolean_t zfs_bookmark_exists(const char *path);
 _LIBZFS_H boolean_t is_mounted(libzfs_handle_t *, const char *special, char **);
 _LIBZFS_H boolean_t zfs_is_mounted(zfs_handle_t *, char **);
 _LIBZFS_H int zfs_mount(zfs_handle_t *, const char *, int);
-_LIBZFS_H int zfs_mount_at(zfs_handle_t *, const char *, int, const char *);
+_LIBZFS_H int zfs_mount_at(zfs_handle_t *, const char *, int, const char *,
+    boolean_t);
 _LIBZFS_H int zfs_unmount(zfs_handle_t *, const char *, int);
 _LIBZFS_H int zfs_unmountall(zfs_handle_t *, int);
 _LIBZFS_H int zfs_mount_delegation_check(void);
@@ -930,7 +931,7 @@ _LIBZFS_H int zfs_parse_mount_options(const char *mntopts,
     unsigned long *mntflags, unsigned long *zfsflags, int sloppy, char *badopt,
     char *mtabopt);
 _LIBZFS_H void zfs_adjust_mount_options(zfs_handle_t *zhp, const char *mntpoint,
-    char *mntopts, char *mtabopt);
+    char *mntopts, char *mtabopt, boolean_t add_mntpoint);
 #endif
 
 /*
