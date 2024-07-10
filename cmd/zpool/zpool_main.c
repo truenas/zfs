@@ -10157,528 +10157,284 @@ print_dedup_stats(nvlist_t *config)
 	zpool_dump_ddt(dds, ddh);
 }
 
+#define	ST_SIZE	4096
+#define	AC_SIZE	2048
+
 static void
 print_status_reason(zpool_handle_t *zhp, status_cbdata_t *cbp,
     zpool_status_t reason, zpool_errata_t errata, nvlist_t *item)
 {
-	char status[4096];
-	char action[2048];
+	char status[ST_SIZE];
+	char action[AC_SIZE];
+	memset(status, 0, ST_SIZE);
+	memset(action, 0, AC_SIZE);
 
 	switch (reason) {
 	case ZPOOL_STATUS_MISSING_DEV_R:
-		snprintf(status, 4096, gettext("One or more devices could "
+		snprintf(status, ST_SIZE, gettext("One or more devices could "
 		    "not be opened.  Sufficient replicas exist for\n\tthe pool "
 		    "to continue functioning in a degraded state.\n"));
-		snprintf(action, 2048, gettext("Attach the missing device "
+		snprintf(action, AC_SIZE, gettext("Attach the missing device "
 		    "and online it using 'zpool online'.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_MISSING_DEV_NR:
-		snprintf(status, 4096, gettext("One or more devices could "
+		snprintf(status, ST_SIZE, gettext("One or more devices could "
 		    "not be opened.  There are insufficient\n\treplicas for the"
 		    " pool to continue functioning.\n"));
-		snprintf(action, 2048, gettext("Attach the missing device "
+		snprintf(action, AC_SIZE, gettext("Attach the missing device "
 		    "and online it using 'zpool online'.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_CORRUPT_LABEL_R:
-		snprintf(status, 4096, gettext("One or more devices could "
+		snprintf(status, ST_SIZE, gettext("One or more devices could "
 		    "not be used because the label is missing or\n\tinvalid.  "
 		    "Sufficient replicas exist for the pool to continue\n\t"
 		    "functioning in a degraded state.\n"));
-		snprintf(action, 2048, gettext("Replace the device using "
+		snprintf(action, AC_SIZE, gettext("Replace the device using "
 		    "'zpool replace'.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_CORRUPT_LABEL_NR:
-		snprintf(status, 4096, gettext("One or more devices could "
+		snprintf(status, ST_SIZE, gettext("One or more devices could "
 		    "not be used because the label is missing \n\tor invalid.  "
 		    "There are insufficient replicas for the pool to "
 		    "continue\n\tfunctioning.\n"));
 		zpool_explain_recover(zpool_get_handle(zhp),
 		    zpool_get_name(zhp), reason, zpool_get_config(zhp, NULL),
-		    action, 2048);
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			(void) printf("%s", action);
-		}
+		    action, AC_SIZE);
 		break;
 
 	case ZPOOL_STATUS_FAILING_DEV:
-		snprintf(status, 4096, gettext("One or more devices has "
+		snprintf(status, ST_SIZE, gettext("One or more devices has "
 		    "experienced an unrecoverable error.  An\n\tattempt was "
 		    "made to correct the error.  Applications are "
 		    "unaffected.\n"));
-		snprintf(action, 2048, gettext("Determine if the "
+		snprintf(action, AC_SIZE, gettext("Determine if the "
 		    "device needs to be replaced, and clear the errors\n\tusing"
 		    " 'zpool clear' or replace the device with 'zpool "
 		    "replace'.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_OFFLINE_DEV:
-		snprintf(status, 4096, gettext("One or more devices has "
+		snprintf(status, ST_SIZE, gettext("One or more devices has "
 		    "been taken offline by the administrator.\n\tSufficient "
 		    "replicas exist for the pool to continue functioning in "
 		    "a\n\tdegraded state.\n"));
-		snprintf(action, 2048, gettext("Online the device "
+		snprintf(action, AC_SIZE, gettext("Online the device "
 		    "using 'zpool online' or replace the device with\n\t'zpool "
 		    "replace'.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_REMOVED_DEV:
-		snprintf(status, 4096, gettext("One or more devices has "
+		snprintf(status, ST_SIZE, gettext("One or more devices has "
 		    "been removed by the administrator.\n\tSufficient "
 		    "replicas exist for the pool to continue functioning in "
 		    "a\n\tdegraded state.\n"));
-		snprintf(action, 2048, gettext("Online the device "
+		snprintf(action, AC_SIZE, gettext("Online the device "
 		    "using zpool online' or replace the device with\n\t'zpool "
 		    "replace'.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_RESILVERING:
 	case ZPOOL_STATUS_REBUILDING:
-		snprintf(status, 4096, gettext("One or more devices is "
+		snprintf(status, ST_SIZE, gettext("One or more devices is "
 		    "currently being resilvered.  The pool will\n\tcontinue "
 		    "to function, possibly in a degraded state.\n"));
-		snprintf(action, 2048, gettext("Wait for the resilver to "
+		snprintf(action, AC_SIZE, gettext("Wait for the resilver to "
 		    "complete.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_REBUILD_SCRUB:
-		snprintf(status, 4096, gettext("One or more devices have "
+		snprintf(status, ST_SIZE, gettext("One or more devices have "
 		    "been sequentially resilvered, scrubbing\n\tthe pool "
 		    "is recommended.\n"));
-		snprintf(action, 2048, gettext("Use 'zpool scrub' to "
+		snprintf(action, AC_SIZE, gettext("Use 'zpool scrub' to "
 		    "verify all data checksums.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_CORRUPT_DATA:
-		snprintf(status, 4096, gettext("One or more devices has "
+		snprintf(status, ST_SIZE, gettext("One or more devices has "
 		    "experienced an error resulting in data\n\tcorruption.  "
 		    "Applications may be affected.\n"));
-		snprintf(action, 2048, gettext("Restore the file in question"
+		snprintf(action, AC_SIZE, gettext("Restore the file in question"
 		    " if possible.  Otherwise restore the\n\tentire pool from "
 		    "backup.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_CORRUPT_POOL:
-		snprintf(status, 4096, gettext("The pool metadata is "
+		snprintf(status, ST_SIZE, gettext("The pool metadata is "
 		    "corrupted and the pool cannot be opened.\n"));
 		zpool_explain_recover(zpool_get_handle(zhp),
 		    zpool_get_name(zhp), reason, zpool_get_config(zhp, NULL),
-		    action, 2048);
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			(void) printf("%s", action);
-		}
+		    action, AC_SIZE);
 		break;
 
 	case ZPOOL_STATUS_VERSION_OLDER:
-		snprintf(status, 4096, gettext("The pool is formatted using "
+		snprintf(status, ST_SIZE, gettext("The pool is formatted using "
 		    "a legacy on-disk format.  The pool can\n\tstill be used, "
 		    "but some features are unavailable.\n"));
-		snprintf(action, 2048, gettext("Upgrade the pool using "
+		snprintf(action, AC_SIZE, gettext("Upgrade the pool using "
 		    "'zpool upgrade'.  Once this is done, the\n\tpool will no "
 		    "longer be accessible on software that does not support\n\t"
 		    "feature flags.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_VERSION_NEWER:
-		snprintf(status, 4096, gettext("The pool has been upgraded "
+		snprintf(status, ST_SIZE, gettext("The pool has been upgraded "
 		    "to a newer, incompatible on-disk version.\n\tThe pool "
 		    "cannot be accessed on this system.\n"));
-		snprintf(action, 2048, gettext("Access the pool from a "
+		snprintf(action, AC_SIZE, gettext("Access the pool from a "
 		    "system running more recent software, or\n\trestore the "
 		    "pool from backup.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_FEAT_DISABLED:
-		snprintf(status, 4096, gettext("Some supported and "
+		snprintf(status, ST_SIZE, gettext("Some supported and "
 		    "requested features are not enabled on the pool.\n\t"
 		    "The pool can still be used, but some features are "
 		    "unavailable.\n"));
-		snprintf(action, 2048, gettext("Enable all features using "
+		snprintf(action, AC_SIZE, gettext("Enable all features using "
 		    "'zpool upgrade'. Once this is done,\n\tthe pool may no "
 		    "longer be accessible by software that does not support\n\t"
 		    "the features. See zpool-features(7) for details.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_COMPATIBILITY_ERR:
-		snprintf(status, 4096, gettext("This pool has a "
+		snprintf(status, ST_SIZE, gettext("This pool has a "
 		    "compatibility list specified, but it could not be\n\t"
 		    "read/parsed at this time. The pool can still be used, "
 		    "but this\n\tshould be investigated.\n"));
-		snprintf(action, 2048, gettext("Check the value of the "
+		snprintf(action, AC_SIZE, gettext("Check the value of the "
 		    "'compatibility' property against the\n\t"
 		    "appropriate file in " ZPOOL_SYSCONF_COMPAT_D " or "
 		    ZPOOL_DATA_COMPAT_D ".\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_INCOMPATIBLE_FEAT:
-		snprintf(status, 4096, gettext("One or more features "
+		snprintf(status, ST_SIZE, gettext("One or more features "
 		    "are enabled on the pool despite not being\n\t"
 		    "requested by the 'compatibility' property.\n"));
-		snprintf(action, 2048, gettext("Consider setting "
+		snprintf(action, AC_SIZE, gettext("Consider setting "
 		    "'compatibility' to an appropriate value, or\n\t"
 		    "adding needed features to the relevant file in\n\t"
 		    ZPOOL_SYSCONF_COMPAT_D " or " ZPOOL_DATA_COMPAT_D ".\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_UNSUP_FEAT_READ:
-		snprintf(status, 4096, gettext("The pool cannot be accessed "
+		snprintf(status, ST_SIZE, gettext("The pool cannot be accessed "
 		    "on this system because it uses the\n\tfollowing feature(s)"
 		    " not supported on this system:\n"));
 		zpool_collect_unsup_feat(zpool_get_config(zhp, NULL), status,
 		    1024);
-		snprintf(action, 2048, gettext("Access the pool from a "
+		snprintf(action, AC_SIZE, gettext("Access the pool from a "
 		    "system that supports the required feature(s),\n\tor "
 		    "restore the pool from backup.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			(void) printf("\n");
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_UNSUP_FEAT_WRITE:
-		snprintf(status, 4096, gettext("The pool can only be "
+		snprintf(status, ST_SIZE, gettext("The pool can only be "
 		    "accessed in read-only mode on this system. It\n\tcannot be"
 		    " accessed in read-write mode because it uses the "
 		    "following\n\tfeature(s) not supported on this system:\n"));
 		zpool_collect_unsup_feat(zpool_get_config(zhp, NULL), status,
 		    1024);
-		snprintf(action, 2048, gettext("The pool cannot be accessed "
+		snprintf(action, AC_SIZE, gettext("The pool cannot be accessed "
 		    "in read-write mode. Import the pool with\n"
 		    "\t\"-o readonly=on\", access the pool from a system that "
 		    "supports the\n\trequired feature(s), or restore the "
 		    "pool from backup.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			(void) printf("\n");
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_FAULTED_DEV_R:
-		snprintf(status, 4096, gettext("One or more devices are "
+		snprintf(status, ST_SIZE, gettext("One or more devices are "
 		    "faulted in response to persistent errors.\n\tSufficient "
 		    "replicas exist for the pool to continue functioning "
 		    "in a\n\tdegraded state.\n"));
-		snprintf(action, 2048, gettext("Replace the faulted device, "
+		snprintf(action, AC_SIZE, gettext("Replace the faulted device, "
 		    "or use 'zpool clear' to mark the device\n\trepaired.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_FAULTED_DEV_NR:
-		snprintf(status, 4096, gettext("One or more devices are "
+		snprintf(status, ST_SIZE, gettext("One or more devices are "
 		    "faulted in response to persistent errors.  There are "
 		    "insufficient replicas for the pool to\n\tcontinue "
 		    "functioning.\n"));
-		snprintf(action, 2048, gettext("Destroy and re-create the "
+		snprintf(action, AC_SIZE, gettext("Destroy and re-create the "
 		    "pool from a backup source.  Manually marking the device\n"
 		    "\trepaired using 'zpool clear' may allow some data "
 		    "to be recovered.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_IO_FAILURE_MMP:
-		snprintf(status, 4096, gettext("The pool is suspended "
+		snprintf(status, ST_SIZE, gettext("The pool is suspended "
 		    "because multihost writes failed or were delayed;\n\t"
 		    "another system could import the pool undetected.\n"));
-		snprintf(action, 2048, gettext("Make sure the pool's devices"
+		snprintf(action, AC_SIZE, gettext("Make sure the pool's devices"
 		    " are connected, then reboot your system and\n\timport the "
 		    "pool or run 'zpool clear' to resume the pool.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_IO_FAILURE_WAIT:
 	case ZPOOL_STATUS_IO_FAILURE_CONTINUE:
-		snprintf(status, 4096, gettext("One or more devices are "
+		snprintf(status, ST_SIZE, gettext("One or more devices are "
 		    "faulted in response to IO failures.\n"));
-		snprintf(action, 2048, gettext("Make sure the affected "
+		snprintf(action, AC_SIZE, gettext("Make sure the affected "
 		    "devices are connected, then run 'zpool clear'.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_BAD_LOG:
-		snprintf(status, 4096, gettext("An intent log record "
+		snprintf(status, ST_SIZE, gettext("An intent log record "
 		    "could not be read.\n"
 		    "\tWaiting for administrator intervention to fix the "
 		    "faulted pool.\n"));
-		snprintf(action, 2048, gettext("Either restore the affected "
+		snprintf(action, AC_SIZE, gettext("Either restore the affected "
 		    "device(s) and run 'zpool online',\n"
 		    "\tor ignore the intent log records by running "
 		    "'zpool clear'.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_NON_NATIVE_ASHIFT:
-		snprintf(status, 4096, gettext("One or more devices are "
+		snprintf(status, ST_SIZE, gettext("One or more devices are "
 		    "configured to use a non-native block size.\n"
 		    "\tExpect reduced performance.\n"));
-		snprintf(action, 2048, gettext("Replace affected devices with "
-		    "devices that support the\n\tconfigured block size, or "
-		    "migrate data to a properly configured\n\tpool.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf("status: %s", status);
-			printf("action: %s", action);
-		}
+		snprintf(action, AC_SIZE, gettext("Replace affected devices "
+		    "with devices that support the\n\tconfigured block size, "
+		    "or migrate data to a properly configured\n\tpool.\n"));
 		break;
 
 	case ZPOOL_STATUS_HOSTID_MISMATCH:
-		snprintf(status, 4096, gettext("Mismatch between pool hostid"
+		snprintf(status, ST_SIZE, gettext("Mismatch between pool hostid"
 		    " and system hostid on imported pool.\n\tThis pool was "
 		    "previously imported into a system with a different "
 		    "hostid,\n\tand then was verbatim imported into this "
 		    "system.\n"));
-		snprintf(action, 2048, gettext("Export this pool on all "
+		snprintf(action, AC_SIZE, gettext("Export this pool on all "
 		    "systems on which it is imported.\n"
 		    "\tThen import it to correct the mismatch.\n"));
-		if (cbp->cb_json) {
-			fnvlist_add_string(item, "status", status);
-			fnvlist_add_string(item, "action", action);
-		} else {
-			printf_color(ANSI_BOLD, gettext("status: "));
-			printf_color(ANSI_YELLOW, status);
-			printf_color(ANSI_BOLD, gettext("action: "));
-			printf_color(ANSI_YELLOW, action);
-		}
 		break;
 
 	case ZPOOL_STATUS_ERRATA:
-		snprintf(status, 4096, gettext("Errata #%d detected.\n"),
+		snprintf(status, ST_SIZE, gettext("Errata #%d detected.\n"),
 		    errata);
 		switch (errata) {
 		case ZPOOL_ERRATA_NONE:
-			if (cbp->cb_json)
-				fnvlist_add_string(item, "status", status);
-			else {
-				printf_color(ANSI_BOLD, gettext("status: "));
-				printf_color(ANSI_YELLOW, status);
-			}
 			break;
 
 		case ZPOOL_ERRATA_ZOL_2094_SCRUB:
-			snprintf(action, 2048, gettext("To correct the issue"
+			snprintf(action, AC_SIZE, gettext("To correct the issue"
 			    " run 'zpool scrub'.\n"));
-			if (cbp->cb_json) {
-				fnvlist_add_string(item, "status", status);
-				fnvlist_add_string(item, "action", action);
-			} else {
-				printf_color(ANSI_BOLD, gettext("status: "));
-				printf_color(ANSI_YELLOW, status);
-				printf_color(ANSI_BOLD, gettext("action: "));
-				printf_color(ANSI_YELLOW, action);
-			}
 			break;
 
 		case ZPOOL_ERRATA_ZOL_6845_ENCRYPTION:
 			(void) strlcat(status, gettext("\tExisting encrypted "
 			    "datasets contain an on-disk incompatibility\n\t "
-			    "which needs to be corrected.\n"), 4096);
-			snprintf(action, 2048, gettext("To correct the issue"
+			    "which needs to be corrected.\n"), ST_SIZE);
+			snprintf(action, AC_SIZE, gettext("To correct the issue"
 			    " backup existing encrypted datasets to new\n\t"
 			    "encrypted datasets and destroy the old ones. "
 			    "'zfs mount -o ro' can\n\tbe used to temporarily "
 			    "mount existing encrypted datasets readonly.\n"));
-			if (cbp->cb_json) {
-				fnvlist_add_string(item, "status", status);
-				fnvlist_add_string(item, "action", action);
-			} else {
-				printf_color(ANSI_BOLD, gettext("status: "));
-				printf_color(ANSI_YELLOW, status);
-				printf_color(ANSI_BOLD, gettext("action: "));
-				printf_color(ANSI_YELLOW, action);
-			}
 			break;
 
 		case ZPOOL_ERRATA_ZOL_8308_ENCRYPTION:
@@ -10686,8 +10442,8 @@ print_status_reason(zpool_handle_t *zhp, status_cbdata_t *cbp,
 			    "snapshots and bookmarks contain an on-disk\n\t"
 			    "incompatibility. This may cause on-disk "
 			    "corruption if they are used\n\twith "
-			    "'zfs recv'.\n"), 4096);
-			snprintf(action, 2048, gettext("To correct the"
+			    "'zfs recv'.\n"), ST_SIZE);
+			snprintf(action, AC_SIZE, gettext("To correct the"
 			    "issue, enable the bookmark_v2 feature. No "
 			    "additional\n\taction is needed if there are no "
 			    "encrypted snapshots or bookmarks.\n\tIf preserving"
@@ -10695,15 +10451,6 @@ print_status_reason(zpool_handle_t *zhp, status_cbdata_t *cbp,
 			    " use\n\ta non-raw send to backup and restore them."
 			    " Alternately, they may be\n\tremoved to resolve "
 			    "the incompatibility.\n"));
-			if (cbp->cb_json) {
-				fnvlist_add_string(item, "status", status);
-				fnvlist_add_string(item, "action", action);
-			} else {
-				printf_color(ANSI_BOLD, gettext("status: "));
-				printf_color(ANSI_YELLOW, status);
-				printf_color(ANSI_BOLD, gettext("action: "));
-				printf_color(ANSI_YELLOW, action);
-			}
 			break;
 
 		default:
@@ -10720,6 +10467,24 @@ print_status_reason(zpool_handle_t *zhp, status_cbdata_t *cbp,
 		 * The remaining errors can't actually be generated, yet.
 		 */
 		assert(reason == ZPOOL_STATUS_OK);
+	}
+
+	if (status[0] != 0) {
+		if (cbp->cb_json)
+			fnvlist_add_string(item, "status", status);
+		else {
+			printf_color(ANSI_BOLD, gettext("status: "));
+			printf_color(ANSI_YELLOW, status);
+		}
+	}
+
+	if (action[0] != 0) {
+		if (cbp->cb_json)
+			fnvlist_add_string(item, "action", action);
+		else {
+			printf_color(ANSI_BOLD, gettext("action: "));
+			printf_color(ANSI_YELLOW, action);
+		}
 	}
 }
 
