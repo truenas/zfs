@@ -526,7 +526,7 @@
     <elf-symbol name='zpool_pool_state_to_name' type='func-type' binding='global-binding' visibility='default-visibility' is-defined='yes'/>
     <elf-symbol name='zpool_prepare_and_label_disk' type='func-type' binding='global-binding' visibility='default-visibility' is-defined='yes'/>
     <elf-symbol name='zpool_prepare_disk' type='func-type' binding='global-binding' visibility='default-visibility' is-defined='yes'/>
-    <elf-symbol name='zpool_print_unsup_feat' type='func-type' binding='global-binding' visibility='default-visibility' is-defined='yes'/>
+    <elf-symbol name='zpool_collect_unsup_feat' type='func-type' binding='global-binding' visibility='default-visibility' is-defined='yes'/>
     <elf-symbol name='zpool_prop_align_right' type='func-type' binding='global-binding' visibility='default-visibility' is-defined='yes'/>
     <elf-symbol name='zpool_prop_column_name' type='func-type' binding='global-binding' visibility='default-visibility' is-defined='yes'/>
     <elf-symbol name='zpool_prop_default_numeric' type='func-type' binding='global-binding' visibility='default-visibility' is-defined='yes'/>
@@ -6431,6 +6431,8 @@
       <parameter type-id='80f4b756' name='name'/>
       <parameter type-id='95e97e5e' name='reason'/>
       <parameter type-id='5ce45b60' name='config'/>
+      <parameter type-id='26a90f95' name='buf'/>
+      <parameter type-id='b59d7dce' name='size'/>
       <return type-id='48b5725f'/>
     </function-decl>
     <function-decl name='zpool_import' mangled-name='zpool_import' visibility='default' binding='global' size-in-bits='64' elf-symbol-id='zpool_import'>
@@ -6440,8 +6442,10 @@
       <parameter type-id='26a90f95' name='altroot'/>
       <return type-id='95e97e5e'/>
     </function-decl>
-    <function-decl name='zpool_print_unsup_feat' mangled-name='zpool_print_unsup_feat' visibility='default' binding='global' size-in-bits='64' elf-symbol-id='zpool_print_unsup_feat'>
+    <function-decl name='zpool_collect_unsup_feat' mangled-name='zpool_collect_unsup_feat' visibility='default' binding='global' size-in-bits='64' elf-symbol-id='zpool_collect_unsup_feat'>
       <parameter type-id='5ce45b60' name='config'/>
+      <parameter type-id='26a90f95' name='buf'/>
+      <parameter type-id='b59d7dce' name='size'/>
       <return type-id='48b5725f'/>
     </function-decl>
     <function-decl name='zpool_import_props' mangled-name='zpool_import_props' visibility='default' binding='global' size-in-bits='64' elf-symbol-id='zpool_import_props'>
