@@ -325,6 +325,8 @@ elif sys.platform.startswith('linux'):
             ['SKIP', cfr_cross_reason],
         'block_cloning/block_cloning_disabled_copyfilerange':
             ['SKIP', cfr_reason],
+        'block_cloning/block_cloning_overwrite':
+            ['SKIP', cfr_reason],
         'block_cloning/block_cloning_lwb_buffer_overflow':
             ['SKIP', cfr_reason],
         'block_cloning/block_cloning_replay':
