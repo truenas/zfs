@@ -40,6 +40,7 @@
 #include <sys/zvol.h>
 #include <sys/zvol_impl.h>
 #include <cityhash.h>
+#include <sys/zfs_znode.h>
 
 #include <linux/blkdev_compat.h>
 #include <linux/task_io_accounting_ops.h>
@@ -68,6 +69,8 @@ static unsigned int zvol_threads = 0;
 static unsigned int zvol_blk_mq_threads = 0;
 static unsigned int zvol_blk_mq_actual_threads;
 static boolean_t zvol_use_blk_mq = B_FALSE;
+static boolean_t zvol_bclone_enabled = B_TRUE;
+static unsigned long zvol_max_copy_bytes = 0;
 
 /*
  * The maximum number of volblocksize blocks to process per thread.  Typically,
@@ -496,6 +499,79 @@ zvol_read_task(void *arg)
 	zv_request_task_free(task);
 }
 
+#ifdef HAVE_BLKDEV_COPY_OFFLOAD
+static void zvol_clone_range_impl(zv_request_t *zvr)
+{
+	zvol_state_t *zv_src = zvr->zv, *zv_dst = zvr->zv;
+	struct request *req = zvr->rq;
+	struct bio *bio = zvr->bio;
+	zfs_uio_t uio_src, uio_dst;
+	uint64_t len = 0;
+	int error = EINVAL, seg = 1;
+	struct blkdev_copy_offload_io *offload_io;
+
+	if (!zvol_bclone_enabled) {
+		zvol_end_io(bio, req, -SET_ERROR(EOPNOTSUPP));
+		return;
+	}
+
+	memset(&uio_src, 0, sizeof (zfs_uio_t));
+	memset(&uio_dst, 0, sizeof (zfs_uio_t));
+
+	if (bio) {
+		offload_io = bio->bi_private;
+		zv_dst = offload_io->driver_private;
+		if (bio->bi_iter.bi_size !=
+		    offload_io->dst_bio->bi_iter.bi_size) {
+			zvol_end_io(bio, req, -SET_ERROR(error));
+			return;
+		}
+		zfs_uio_bvec_init(&uio_src, bio, NULL);
+		zfs_uio_bvec_init(&uio_dst, offload_io->dst_bio, NULL);
+		len = bio->bi_iter.bi_size;
+	} else {
+		/*
+		 * First bio contains information about destination and
+		 * the second contains information about the source
+		 */
+		struct bio *bio_temp;
+		__rq_for_each_bio(bio_temp, req) {
+			if (seg == blk_rq_nr_phys_segments(req)) {
+				offload_io = bio_temp->bi_private;
+				zfs_uio_bvec_init(&uio_src, bio_temp, NULL);
+				if (len != bio_temp->bi_iter.bi_size) {
+					zvol_end_io(bio, req,
+					    -SET_ERROR(error));
+					return;
+				}
+				if (offload_io && offload_io->driver_private)
+					zv_dst = offload_io->driver_private;
+			} else {
+				zfs_uio_bvec_init(&uio_dst, bio_temp, NULL);
+				len = bio_temp->bi_iter.bi_size;
+			}
+			seg++;
+		}
+	}
+
+	if (!zv_src || !zv_dst) {
+		zvol_end_io(bio, req, -SET_ERROR(error));
+		return;
+	}
+
+	error = zvol_clone_range(zv_src, uio_src.uio_loffset, zv_dst,
+	    uio_dst.uio_loffset, len);
+	zvol_end_io(bio, req, -error);
+}
+
+static void
+zvol_clone_range_task(void *arg)
+{
+	zv_request_task_t *task = arg;
+	zvol_clone_range_impl(&task->zvr);
+	zv_request_task_free(task);
+}
+#endif
 
 /*
  * Process a BIO or request
@@ -554,6 +630,24 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, struct request *rq,
 	taskq_hash = cityhash3((uintptr_t)zv, offset >> ZVOL_TASKQ_OFFSET_SHIFT,
 	    blk_mq_hw_queue);
 	tq_idx = taskq_hash % ztqs->tqs_cnt;
+
+#ifdef HAVE_BLKDEV_COPY_OFFLOAD
+	if ((bio && op_is_copy(bio_op(bio))) ||
+	    (rq && op_is_copy(req_op(rq)))) {
+		if (unlikely(zv->zv_flags & ZVOL_RDONLY)) {
+			zvol_end_io(bio, rq, -SET_ERROR(EROFS));
+			goto out;
+		}
+		if (force_sync) {
+			zvol_clone_range_impl(&zvr);
+		} else {
+			task = zv_request_task_create(zvr);
+			taskq_dispatch_ent(ztqs->tqs_taskq[tq_idx],
+			    zvol_clone_range_task, task, 0, &task->ent);
+		}
+		goto out;
+	}
+#endif
 
 	if (rw == WRITE) {
 		if (unlikely(zv->zv_flags & ZVOL_RDONLY)) {
@@ -1607,6 +1701,10 @@ zvol_os_create_minor(const char *name)
 	uint64_t hash = zvol_name_hash(name);
 	uint64_t volthreading;
 	bool replayed_zil = B_FALSE;
+#ifdef HAVE_BLKDEV_COPY_OFFLOAD
+	struct queue_limits *lim;
+	uint64_t max_clone_blocks = 1022;
+#endif
 
 	if (zvol_inhibit_dev)
 		return (0);
@@ -1693,6 +1791,33 @@ zvol_os_create_minor(const char *name)
 		else
 			replayed_zil = zil_replay(os, zv, zvol_replay_vector);
 	}
+#ifdef HAVE_BLKDEV_COPY_OFFLOAD
+	lim = &zv->zv_zso->zvo_queue->limits;
+	lim->max_user_copy_sectors = UINT_MAX;
+
+	/*
+	 * When zvol_bclone_enabled is unset, blkdev_copy_offload() should
+	 * return early and fall back to the default path. Existing zvols
+	 * would require export/import to make this applicable.
+	 */
+	if (!zvol_bclone_enabled) {
+		lim->max_copy_hw_sectors = 0;
+		lim->max_copy_sectors = 0;
+	} else if (!zvol_max_copy_bytes) {
+		if (zv->zv_zilog)
+			max_clone_blocks = zil_max_log_data(zv->zv_zilog,
+			    sizeof (lr_clone_range_t)) / sizeof (blkptr_t);
+		lim->max_copy_hw_sectors = MIN((doi->doi_data_block_size *
+		    max_clone_blocks), BLK_COPY_MAX_BYTES) >> 9;
+		lim->max_copy_sectors = MIN((doi->doi_data_block_size *
+		    max_clone_blocks), BLK_COPY_MAX_BYTES) >> 9;
+	} else {
+		lim->max_copy_hw_sectors = MIN(zvol_max_copy_bytes,
+		    BLK_COPY_MAX_BYTES) >> 9;
+		lim->max_copy_sectors = MIN(zvol_max_copy_bytes,
+		    BLK_COPY_MAX_BYTES) >> 9;
+	}
+#endif
 	if (replayed_zil)
 		zil_close(zv->zv_zilog);
 	zv->zv_zilog = NULL;
@@ -1934,6 +2059,12 @@ MODULE_PARM_DESC(zvol_use_blk_mq, "Use the blk-mq API for zvols");
 module_param(zvol_blk_mq_blocks_per_thread, uint, 0644);
 MODULE_PARM_DESC(zvol_blk_mq_blocks_per_thread,
     "Process volblocksize blocks per thread");
+
+module_param(zvol_max_copy_bytes, ulong, 0644);
+MODULE_PARM_DESC(zvol_max_copy_bytes, "max copy bytes for zvol block cloning");
+
+module_param(zvol_bclone_enabled, uint, 0644);
+MODULE_PARM_DESC(zvol_bclone_enabled, "Disable block cloning for zvols");
 
 #ifndef HAVE_BLKDEV_GET_ERESTARTSYS
 module_param(zvol_open_timeout_ms, uint, 0644);

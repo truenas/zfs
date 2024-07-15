@@ -228,14 +228,14 @@ main(int argc, char **argv)
 		}
 	}
 
-	int sfd = open(argv[optind], O_RDONLY);
+	int sfd = open(argv[optind], O_RDONLY | O_DIRECT);
 	if (sfd < 0) {
 		fprintf(stderr, "open: %s: %s\n",
 		    argv[optind], strerror(errno));
 		return (1);
 	}
 
-	int dfd = open(argv[optind+1], O_WRONLY|O_CREAT,
+	int dfd = open(argv[optind+1], O_WRONLY|O_CREAT|O_DIRECT,
 	    S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
 	if (dfd < 0) {
 		fprintf(stderr, "open: %s: %s\n",

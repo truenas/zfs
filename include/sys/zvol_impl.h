@@ -83,6 +83,9 @@ void zvol_log_truncate(zvol_state_t *zv, dmu_tx_t *tx, uint64_t off,
     uint64_t len);
 void zvol_log_write(zvol_state_t *zv, dmu_tx_t *tx, uint64_t offset,
     uint64_t size, boolean_t commit);
+void zvol_log_clone_range(zilog_t *zilog, dmu_tx_t *tx, int txtype,
+    uint64_t off, uint64_t len, uint64_t blksz, const blkptr_t *bps,
+    size_t nbps);
 int zvol_get_data(void *arg, uint64_t arg2, lr_write_t *lr, char *buf,
     struct lwb *lwb, zio_t *zio);
 int zvol_init_impl(void);

@@ -133,6 +133,36 @@ AC_DEFUN([ZFS_AC_KERNEL_BLKDEV_BLK_MODE_T], [
 ])
 
 dnl #
+dnl # Upstream patch for blkdev copy offload support
+dnl #
+AC_DEFUN([ZFS_AC_KERNEL_SRC_BLKDEV_COPY_OFFLOAD], [
+	ZFS_LINUX_TEST_SRC([blkdev_copy_offload], [
+		#include <linux/bio.h>
+		#include <linux/blkdev.h>
+	], [
+		struct block_device *bdev_in = NULL, *bdev_out = NULL;
+		loff_t pos_in = 0, pos_out = 0;
+		ssize_t ret __attribute__ ((unused));
+		ssize_t len = 0;
+		void *private = NULL;
+		void (*endio)(void *, int, ssize_t) = NULL;
+		ret = blkdev_copy_offload(bdev_in, pos_in, pos_out, len,
+			    endio, private, GFP_KERNEL, bdev_out);
+	])
+])
+
+AC_DEFUN([ZFS_AC_KERNEL_BLKDEV_COPY_OFFLOAD], [
+	AC_MSG_CHECKING([whether blkdev_copy_offload exists])
+	ZFS_LINUX_TEST_RESULT([blkdev_copy_offload], [
+		AC_MSG_RESULT(yes)
+		AC_DEFINE(HAVE_BLKDEV_COPY_OFFLOAD, 1,
+			[blkdev_copy_offload exists])
+	], [
+		AC_MSG_RESULT(no)
+	])
+])
+
+dnl #
 dnl # 2.6.38 API change,
 dnl # Added blkdev_put()
 dnl #
@@ -759,6 +789,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_BLKDEV], [
 	ZFS_AC_KERNEL_SRC_BLKDEV_DISK_CHECK_MEDIA_CHANGE
 	ZFS_AC_KERNEL_SRC_BLKDEV_BLK_STS_RESV_CONFLICT
 	ZFS_AC_KERNEL_SRC_BLKDEV_BLK_MODE_T
+	ZFS_AC_KERNEL_SRC_BLKDEV_COPY_OFFLOAD
 ])
 
 AC_DEFUN([ZFS_AC_KERNEL_BLKDEV], [
@@ -781,4 +812,5 @@ AC_DEFUN([ZFS_AC_KERNEL_BLKDEV], [
 	ZFS_AC_KERNEL_BLKDEV_DISK_CHECK_MEDIA_CHANGE
 	ZFS_AC_KERNEL_BLKDEV_BLK_STS_RESV_CONFLICT
 	ZFS_AC_KERNEL_BLKDEV_BLK_MODE_T
+	ZFS_AC_KERNEL_BLKDEV_COPY_OFFLOAD
 ])

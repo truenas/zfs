@@ -56,6 +56,8 @@ extern int zvol_set_ro(const char *, boolean_t);
 extern zvol_state_handle_t *zvol_suspend(const char *);
 extern int zvol_resume(zvol_state_handle_t *);
 extern void *zvol_tag(zvol_state_handle_t *);
+extern int zvol_clone_range(zvol_state_handle_t *, uint64_t,
+    zvol_state_handle_t *, uint64_t, uint64_t);
 
 extern int zvol_init(void);
 extern void zvol_fini(void);
