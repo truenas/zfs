@@ -38,6 +38,7 @@
 #include <sys/zvol.h>
 #include <sys/zvol_impl.h>
 #include <cityhash.h>
+#include <sys/zfs_znode.h>
 
 #include <linux/blkdev_compat.h>
 #include <linux/task_io_accounting_ops.h>
@@ -84,6 +85,7 @@ static unsigned int zvol_blk_mq_blocks_per_thread = 8;
 #endif
 
 static unsigned int zvol_num_taskqs = 0;
+extern int zfs_bclone_wait_dirty;
 
 #ifndef	BLKDEV_DEFAULT_RQ
 /* BLKDEV_MAX_RQ was renamed to BLKDEV_DEFAULT_RQ in the 5.16 kernel */
@@ -145,6 +147,11 @@ typedef struct zv_request_task {
 	zv_request_t zvr;
 	taskq_ent_t	ent;
 } zv_request_task_t;
+
+/* Keeps track of single outstanding copy offload IO */
+struct blkdev_copy_offload_io_zvol {
+	void   *driver_private;
+};
 
 static zv_request_task_t *
 zv_request_task_create(zv_request_t zvr)
@@ -506,6 +513,218 @@ zvol_read_task(void *arg)
 	zv_request_task_free(task);
 }
 
+static int zvol_setup_copy(zv_request_t *zvr) {
+	struct bio *bio;
+	struct request *req = zvr->rq;
+	zvol_state_t *zv_src = zvr->zv;
+	zvol_state_t *zv_dst = zvr->zv;
+	zilog_t		*zilog_dst;
+	zfs_uio_t uio_src, uio_dst;
+	dmu_tx_t	*tx;
+	zfs_locked_range_t *inlr, *outlr;
+	blkptr_t	*bps;
+	objset_t	*inos, *outos;
+	size_t		maxblocks, nbps;
+	uint64_t inoff, outoff, len, size, last_synced_txg;
+	int error = 0, seg = 1;
+	/*
+	 * First bio contains information about destination and last bio
+	 * contains information about source.
+	 */
+	__rq_for_each_bio(bio, req) {
+		/*
+		 * Last bio, SOURCE
+		 */
+		if (seg == blk_rq_nr_phys_segments(req)) {
+			struct blkdev_copy_offload_io_zvol *offload_io =
+			    bio->bi_private;
+			zfs_uio_bvec_init(&uio_src, bio, NULL);
+			if (len != bio->bi_iter.bi_size) {
+				error = -EIO;
+				goto out;
+			}
+			if (offload_io && offload_io->driver_private)
+				zv_dst = offload_io->driver_private;
+		}
+
+		/*
+		 * First bio, DEST
+		 */
+		else {
+			zfs_uio_bvec_init(&uio_dst, bio, NULL);
+			len = bio->bi_iter.bi_size;
+		}
+		seg++;
+	}
+
+	if (zv_src != zv_dst)
+		rw_enter(&zv_dst->zv_suspend_lock, RW_READER);
+
+	inoff = uio_src.uio_loffset;
+	outoff = uio_dst.uio_loffset;
+	inos = zv_src->zv_objset;
+	outos = zv_dst->zv_objset;
+
+	/*
+	 * Both source and destination have to belong to the same storage pool.
+	 */
+	if (dmu_objset_spa(inos) != dmu_objset_spa(outos)) {
+		error = EXDEV;
+		goto out;
+	}
+
+	/*
+	 * outos and inos belongs to the same storage pool.
+	 * see a few lines above, only one check.
+	 */
+	if (!spa_feature_is_enabled(dmu_objset_spa(outos),
+	    SPA_FEATURE_BLOCK_CLONING)) {
+		error = EOPNOTSUPP;
+		goto out;
+	}
+
+	/*
+	 * Block cloning from an unencrypted dataset into an encrypted
+	 * dataset and vice versa is not supported.
+	 */
+	if (inos->os_encrypted != outos->os_encrypted) {
+		error = EXDEV;
+		goto out;
+	}
+
+	if (inoff >= zv_src->zv_volsize) {
+		error = 0;
+		goto out;
+	}
+
+	if (len > zv_src->zv_volsize - inoff) {
+		len = zv_src->zv_volsize - inoff;
+	}
+	if (len == 0) {
+		error = 0;
+		goto out;
+	}
+
+	/*
+	 * No overlapping if we are cloning within the same file.
+	 */
+	if (zv_src == zv_dst) {
+		if (inoff < outoff + len && outoff < inoff + len) {
+			error = EINVAL;
+			goto out;
+		}
+	}
+
+	if (zv_src->zv_volblocksize != zv_dst->zv_volblocksize) {
+		error = EINVAL;
+		goto out;
+	}
+	/*
+	 * Block size must be power-of-2 if destination offset != 0.
+	 * There can be no multiple blocks of non-power-of-2 size.
+	 */
+	if (outoff != 0 && !ISP2(zv_src->zv_volblocksize)) {
+		error = EINVAL;
+		goto out;
+	}
+
+	/*
+	 * Offsets and len must be at block boundries.
+	 */
+	if ((inoff % zv_src->zv_volblocksize) != 0 ||
+	    (outoff % zv_dst->zv_volblocksize) != 0) {
+		error = EINVAL;
+		goto out;
+	}
+
+	/*
+	 * Length must be multipe of blksz, except for the end of the file.
+	 */
+	if ((len % zv_src->zv_volblocksize) != 0 && (len < zv_src->zv_volsize -
+	    inoff || len < zv_dst->zv_volsize - outoff)) {
+		error = EINVAL;
+		goto out;
+	}
+
+	if (zv_dst->zv_zilog == NULL) {
+		rw_exit(&zv_dst->zv_suspend_lock);
+		rw_enter(&zv_dst->zv_suspend_lock, RW_WRITER);
+		if (zv_dst->zv_zilog == NULL) {
+			zv_dst->zv_zilog = zil_open(zv_dst->zv_objset,
+			    zvol_get_data, &zv_dst->zv_kstat.dk_zil_sums);
+			zv_dst->zv_flags |= ZVOL_WRITTEN_TO;
+			/* replay / destroy done in zvol_create_minor */
+			VERIFY0((zv_dst->zv_zilog->zl_header->zh_flags &
+			    ZIL_REPLAY_NEEDED));
+		}
+		rw_downgrade(&zv_dst->zv_suspend_lock);
+	}
+
+	zilog_dst = zv_dst->zv_zilog;
+	maxblocks = zil_max_log_data(zilog_dst, sizeof (lr_clone_range_t)) /
+	    sizeof (bps[0]);
+	bps = vmem_alloc(sizeof (bps[0]) * maxblocks, KM_SLEEP);
+	inlr = zfs_rangelock_enter(&zv_src->zv_rangelock, inoff, len,
+	    RL_READER);
+	outlr = zfs_rangelock_enter(&zv_dst->zv_rangelock, outoff, len,
+	    RL_WRITER);
+	while (len > 0) {
+		size = MIN(zv_src->zv_volblocksize * maxblocks, len);
+		nbps = maxblocks;
+		last_synced_txg = spa_last_synced_txg(
+		    dmu_objset_spa(zv_src->zv_objset));
+		error = dmu_read_l0_bps(zv_src->zv_objset, ZVOL_OBJ, inoff,
+		    size, bps, &nbps);
+		if (error != 0) {
+			/*
+			 * If we are trying to clone a block that was created
+			 * in the current transaction group, the error will be
+			 * EAGAIN here.  Based on zfs_bclone_wait_dirty either
+			 * return a shortened range to the caller so it can
+			 * fallback, or wait for the next TXG and check again.
+			 */
+			if (error == EAGAIN && zfs_bclone_wait_dirty) {
+				txg_wait_synced(dmu_objset_pool
+				    (zv_src->zv_objset), last_synced_txg + 1);
+				continue;
+			}
+			break;
+		}
+		/*
+		 * Start a transaction.
+		 */
+		tx = dmu_tx_create(zv_dst->zv_objset);
+		dmu_tx_hold_clone_by_dnode(tx, zv_dst->zv_dn, outoff, size);
+
+		error = dmu_tx_assign(tx, TXG_WAIT);
+		if (error != 0) {
+			dmu_tx_abort(tx);
+			break;
+		}
+		error = dmu_brt_clone(zv_dst->zv_objset, ZVOL_OBJ, outoff, size,
+		    tx, bps, nbps);
+		if (error != 0) {
+			dmu_tx_commit(tx);
+			break;
+		}
+		zfs_log_clone_range(zilog_dst, tx, TX_CLONE_RANGE, NULL, outoff,
+		    size, zv_src->zv_volblocksize, bps, nbps);
+		dmu_tx_commit(tx);
+		inoff += size;
+		outoff += size;
+		len -= size;
+	}
+	vmem_free(bps, sizeof (bps[0]) * maxblocks);
+	zfs_rangelock_exit(outlr);
+	zfs_rangelock_exit(inlr);
+	if (error == 0 && zv_dst->zv_objset->os_sync == ZFS_SYNC_ALWAYS) {
+		zil_commit(zilog_dst, ZVOL_OBJ);
+	}
+out:
+	if (zv_src != zv_dst)
+		rw_exit(&zv_dst->zv_suspend_lock);
+	return (error);
+}
 
 /*
  * Process a BIO or request
@@ -533,6 +752,18 @@ zvol_request_impl(zvol_state_t *zv, struct bio *bio, struct request *rq,
 		.bio = bio,
 		.rq = rq,
 	};
+
+	if (zv->zv_zso->use_blk_mq && rq && op_is_copy(req_op(rq))) {
+		int status;
+		rw_enter(&zv->zv_suspend_lock, RW_READER);
+		status = zvol_setup_copy(&zvr);
+		rw_exit(&zv->zv_suspend_lock);
+		END_IO(zv, bio, rq, -SET_ERROR(status));
+		return;
+	} else if (bio && op_is_copy(bio_op(bio))) {
+		END_IO(zv, bio, rq, -SET_ERROR(EOPNOTSUPP));
+		return;
+	}
 
 	if (io_has_data(bio, rq) && offset + size > zv->zv_volsize) {
 		printk(KERN_INFO "%s: bad access: offset=%llu, size=%lu\n",
@@ -1356,6 +1587,7 @@ zvol_os_create_minor(const char *name)
 	uint64_t hash = zvol_name_hash(name);
 	uint64_t volthreading;
 	bool replayed_zil = B_FALSE;
+	struct queue_limits *lim;
 
 	if (zvol_inhibit_dev)
 		return (0);
@@ -1418,6 +1650,12 @@ zvol_os_create_minor(const char *name)
 
 	blk_queue_max_hw_sectors(zv->zv_zso->zvo_queue,
 	    (DMU_MAX_ACCESS / 4) >> 9);
+
+	if (zv->zv_zso->use_blk_mq) {
+		lim = &zv->zv_zso->zvo_queue->limits;
+		lim->max_copy_hw_sectors = (DMU_MAX_ACCESS / 4) >> 9;
+		lim->max_copy_sectors = (DMU_MAX_ACCESS / 4) >> 9;
+	}
 
 	if (zv->zv_zso->use_blk_mq) {
 		/*

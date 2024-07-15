@@ -46,6 +46,7 @@
 #include <sys/spa.h>
 #include <sys/zfs_fuid.h>
 #include <sys/dsl_dataset.h>
+#include <sys/zvol.h>
 
 /*
  * These zfs_log_* functions must be called within a dmu tx, in one
@@ -897,7 +898,7 @@ zfs_log_clone_range(zilog_t *zilog, dmu_tx_t *tx, int txtype, znode_t *zp,
 	uint64_t partlen, max_log_data;
 	size_t i, partnbps;
 
-	if (zil_replaying(zilog, tx) || zp->z_unlinked)
+	if (zil_replaying(zilog, tx) || (zp && zp->z_unlinked))
 		return;
 
 	max_log_data = zil_max_log_data(zilog, sizeof (lr_clone_range_t));
@@ -913,14 +914,18 @@ zfs_log_clone_range(zilog_t *zilog, dmu_tx_t *tx, int txtype, znode_t *zp,
 		itx = zil_itx_create(txtype,
 		    sizeof (*lr) + sizeof (bps[0]) * partnbps);
 		lr = (lr_clone_range_t *)&itx->itx_lr;
-		lr->lr_foid = zp->z_id;
+		lr->lr_foid = (zp) ? zp->z_id : ZVOL_OBJ;
 		lr->lr_offset = off;
 		lr->lr_length = partlen;
 		lr->lr_blksz = blksz;
 		lr->lr_nbps = partnbps;
 		memcpy(lr->lr_bps, bps, sizeof (bps[0]) * partnbps);
 
-		itx->itx_sync = (zp->z_sync_cnt != 0);
+		if (zp) {
+			itx->itx_sync = (zp->z_sync_cnt != 0);
+		} else {
+			itx->itx_sync = 0;
+		}
 
 		zil_itx_assign(zilog, itx, tx);
 
