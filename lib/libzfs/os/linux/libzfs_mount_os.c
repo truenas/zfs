@@ -281,6 +281,8 @@ zfs_adjust_mount_options(zfs_handle_t *zhp, const char *mntpoint,
     char *mntopts, char *mtabopt)
 {
 	char prop[ZFS_MAXPROPLEN];
+	char bootfs[ZPOOL_MAXPROPLEN];
+	zpool_handle_t *pool = zfs_get_pool_handle(zhp);
 
 	/*
 	 * Checks to see if the ZFS_PROP_SELINUX_CONTEXT exists
@@ -304,6 +306,14 @@ zfs_adjust_mount_options(zfs_handle_t *zhp, const char *mntpoint,
 			append_mntopt(MNTOPT_CONTEXT, prop,
 			    mntopts, mtabopt, B_TRUE);
 		}
+	}
+
+	if (zpool_get_prop(pool, ZPOOL_PROP_BOOTFS, bootfs, sizeof (bootfs),
+	    NULL, B_FALSE) == 0) {
+		if (strcmp(bootfs, "-") != 0 &&
+			strlen(zfs_get_name(zhp)) >= strlen(bootfs) &&
+			strncmp(bootfs, zfs_get_name(zhp), strlen(bootfs)) == 0)
+				return;
 	}
 
 	/* A hint used to determine an auto-mounted snapshot mount point */
