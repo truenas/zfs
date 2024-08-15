@@ -291,15 +291,20 @@ find_top_affected_fs(spa_t *spa, uint64_t head_ds, zbookmark_err_phys_t *zep,
  * uaddr and has *count unused entries, and decrement *count by 1.
  */
 static int
-copyout_entry(const zbookmark_phys_t *zb, void *uaddr, uint64_t *count)
+copyout_entry(const zbookmark_phys_t *zb, void *uaddr, uint64_t *count, int mode)
 {
 	if (*count == 0)
 		return (SET_ERROR(ENOMEM));
 
 	*count -= 1;
-	if (copyout(zb, (char *)uaddr + (*count) * sizeof (zbookmark_phys_t),
-	    sizeof (zbookmark_phys_t)) != 0)
-		return (SET_ERROR(EFAULT));
+	if (mode == COPY_TO_USER) {
+		if (copyout(zb, (char *)uaddr + (*count) * sizeof (zbookmark_phys_t),
+			sizeof (zbookmark_phys_t)) != 0)
+			return (SET_ERROR(EFAULT));
+	} else if (mode == COPY_TO_KERNEL) {
+		memcpy((char *)uaddr + (*count) * sizeof (zbookmark_phys_t), zb,
+		    sizeof (zbookmark_phys_t));
+	}
 	return (0);
 }
 
@@ -312,7 +317,7 @@ copyout_entry(const zbookmark_phys_t *zb, void *uaddr, uint64_t *count)
  */
 static int
 check_filesystem(spa_t *spa, uint64_t head_ds, zbookmark_err_phys_t *zep,
-    void *uaddr, uint64_t *count, list_t *clones_list)
+    void *uaddr, uint64_t *count, list_t *clones_list, int mode)
 {
 	dsl_dataset_t *ds;
 	dsl_pool_t *dp = spa->spa_dsl_pool;
@@ -336,7 +341,7 @@ check_filesystem(spa_t *spa, uint64_t head_ds, zbookmark_err_phys_t *zep,
 		/* Block neither free nor rewritten. */
 		zbookmark_phys_t zb;
 		zep_to_zb(head_ds, zep, &zb);
-		error = copyout_entry(&zb, uaddr, count);
+		error = copyout_entry(&zb, uaddr, count, mode);
 		if (error != 0) {
 			dsl_dataset_rele_flags(ds, DS_HOLD_FLAG_DECRYPT, FTAG);
 			return (error);
@@ -407,7 +412,7 @@ check_filesystem(spa_t *spa, uint64_t head_ds, zbookmark_err_phys_t *zep,
 
 			zbookmark_phys_t zb;
 			zep_to_zb(snap_obj, zep, &zb);
-			error = copyout_entry(&zb, uaddr, count);
+			error = copyout_entry(&zb, uaddr, count, mode);
 			if (error != 0) {
 				dsl_dataset_rele_flags(ds, DS_HOLD_FLAG_DECRYPT,
 				    FTAG);
@@ -473,7 +478,7 @@ out:
 
 static int
 process_error_block(spa_t *spa, uint64_t head_ds, zbookmark_err_phys_t *zep,
-    void *uaddr, uint64_t *count)
+    void *uaddr, uint64_t *count, int mode)
 {
 	/*
 	 * If zb_birth == 0 or head_ds == 0 it means we failed to retrieve the
@@ -485,7 +490,7 @@ process_error_block(spa_t *spa, uint64_t head_ds, zbookmark_err_phys_t *zep,
 	if (zep->zb_birth == 0 || head_ds == 0) {
 		zbookmark_phys_t zb;
 		zep_to_zb(head_ds, zep, &zb);
-		int error = copyout_entry(&zb, uaddr, count);
+		int error = copyout_entry(&zb, uaddr, count, mode);
 		if (error != 0) {
 			return (error);
 		}
@@ -503,11 +508,11 @@ process_error_block(spa_t *spa, uint64_t head_ds, zbookmark_err_phys_t *zep,
 		    offsetof(clones_t, node));
 
 		error = check_filesystem(spa, top_affected_fs, zep,
-		    uaddr, count, &clones_list);
+		    uaddr, count, &clones_list, mode);
 
 		while ((ct = list_remove_head(&clones_list)) != NULL) {
 			error = check_filesystem(spa, ct->clone_ds, zep,
-			    uaddr, count, &clones_list);
+			    uaddr, count, &clones_list, mode);
 			kmem_free(ct, sizeof (*ct));
 
 			if (error) {
@@ -950,7 +955,7 @@ spa_upgrade_errlog(spa_t *spa, dmu_tx_t *tx)
  * If an error block is shared by two datasets it will be counted twice.
  */
 static int
-process_error_log(spa_t *spa, uint64_t obj, void *uaddr, uint64_t *count)
+process_error_log(spa_t *spa, uint64_t obj, void *uaddr, uint64_t *count, int mode)
 {
 	if (obj == 0)
 		return (0);
@@ -975,7 +980,7 @@ process_error_log(spa_t *spa, uint64_t obj, void *uaddr, uint64_t *count)
 			zbookmark_phys_t zb;
 			name_to_bookmark(za->za_name, &zb);
 
-			int error = copyout_entry(&zb, uaddr, count);
+			int error = copyout_entry(&zb, uaddr, count, mode);
 			if (error != 0) {
 				zap_cursor_fini(zc);
 				kmem_free(zc, sizeof (*zc));
@@ -1009,7 +1014,7 @@ process_error_log(spa_t *spa, uint64_t obj, void *uaddr, uint64_t *count)
 			zbookmark_err_phys_t head_ds_block;
 			name_to_errphys(head_ds_attr->za_name, &head_ds_block);
 			int error = process_error_block(spa, head_ds,
-			    &head_ds_block, uaddr, count);
+			    &head_ds_block, uaddr, count, mode);
 
 			if (error != 0) {
 				zap_cursor_fini(head_ds_cursor);
@@ -1034,7 +1039,7 @@ process_error_log(spa_t *spa, uint64_t obj, void *uaddr, uint64_t *count)
 }
 
 static int
-process_error_list(spa_t *spa, avl_tree_t *list, void *uaddr, uint64_t *count)
+process_error_list(spa_t *spa, avl_tree_t *list, void *uaddr, uint64_t *count, int mode)
 {
 	spa_error_entry_t *se;
 
@@ -1042,7 +1047,7 @@ process_error_list(spa_t *spa, avl_tree_t *list, void *uaddr, uint64_t *count)
 		for (se = avl_first(list); se != NULL;
 		    se = AVL_NEXT(list, se)) {
 			int error =
-			    copyout_entry(&se->se_bookmark, uaddr, count);
+			    copyout_entry(&se->se_bookmark, uaddr, count, mode);
 			if (error != 0) {
 				return (error);
 			}
@@ -1064,7 +1069,7 @@ process_error_list(spa_t *spa, avl_tree_t *list, void *uaddr, uint64_t *count)
 			head_ds = se->se_bookmark.zb_objset;
 
 		error = process_error_block(spa, head_ds,
-		    &se->se_zep, uaddr, count);
+		    &se->se_zep, uaddr, count, mode);
 		if (error != 0)
 			return (error);
 	}
@@ -1084,7 +1089,7 @@ process_error_list(spa_t *spa, avl_tree_t *list, void *uaddr, uint64_t *count)
  * the error list lock when we are finished.
  */
 int
-spa_get_errlog(spa_t *spa, void *uaddr, uint64_t *count)
+spa_get_errlog(spa_t *spa, void *uaddr, uint64_t *count, int mode)
 {
 	int ret = 0;
 
@@ -1098,25 +1103,25 @@ spa_get_errlog(spa_t *spa, void *uaddr, uint64_t *count)
 	dsl_pool_config_enter(spa->spa_dsl_pool, FTAG);
 	mutex_enter(&spa->spa_errlog_lock);
 
-	ret = process_error_log(spa, spa->spa_errlog_scrub, uaddr, count);
+	ret = process_error_log(spa, spa->spa_errlog_scrub, uaddr, count, mode);
 
 	if (!ret && !spa->spa_scrub_finished)
 		ret = process_error_log(spa, spa->spa_errlog_last, uaddr,
-		    count);
+		    count, mode);
 
 	mutex_enter(&spa->spa_errlist_lock);
 	if (!ret)
 		ret = process_error_list(spa, &spa->spa_errlist_scrub, uaddr,
-		    count);
+		    count, mode);
 	if (!ret)
 		ret = process_error_list(spa, &spa->spa_errlist_last, uaddr,
-		    count);
+		    count, mode);
 	mutex_exit(&spa->spa_errlist_lock);
 
 	mutex_exit(&spa->spa_errlog_lock);
 	dsl_pool_config_exit(spa->spa_dsl_pool, FTAG);
 #else
-	(void) spa, (void) uaddr, (void) count;
+	(void) spa, (void) uaddr, (void) count, (void) mode;
 #endif
 
 	return (ret);

@@ -5973,7 +5973,7 @@ zfs_ioc_error_log(zfs_cmd_t *zc)
 		return (error);
 
 	error = spa_get_errlog(spa, (void *)(uintptr_t)zc->zc_nvlist_dst,
-	    &zc->zc_nvlist_dst_size);
+	    &zc->zc_nvlist_dst_size, COPY_TO_USER);
 
 	spa_close(spa, FTAG);
 
