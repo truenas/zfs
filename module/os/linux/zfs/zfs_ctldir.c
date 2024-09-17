@@ -1050,6 +1050,77 @@ exportfs_flush(void)
 }
 
 /*
+ * Returns the path in char format for given struct path. If path
+ * pointer is NULL, it returns the path in char format for current
+ * process root. Uses d_path available in kernel API to convert
+ * struct path in char* format. Returns the correct path for
+ * mountpoints and chroot environments.
+ *
+ * If chroot environment has directories that are mounted with
+ * --bind or --rbind flag, d_path returns the complete path inside
+ * chroot environment but does not return the absolute path, i.e.
+ * the path to chroot environment.
+ */
+static int
+get_root_path(struct path *path, char *buff, int len)
+{
+	struct path p;
+	char *path_buffer, *path_ptr;
+	int path_len, error = 0;
+
+	if (path == NULL)
+		get_fs_root(current->fs, &p);
+	else
+		p = *path;
+
+	path_get(&p);
+	path_buffer = kmem_zalloc(len, KM_SLEEP);
+	path_ptr = d_path(&p, path_buffer, len);
+	if (IS_ERR(path_ptr)) {
+		error = -PTR_ERR(path_ptr);
+		goto out;
+	}
+	path_len = path_buffer + len - 1 - path_ptr;
+	if (path_len > len) {
+		error = SET_ERROR(EFAULT);
+		goto out;
+	}
+	memcpy(buff, path_ptr, path_len);
+	buff[path_len] = '\0';
+
+out:
+	kmem_free(path_buffer, len);
+	path_put(&p);
+	return (error);
+}
+
+/*
+ * Returns if the current process root is chrooted or not.
+ */
+static int
+is_current_chrooted(void)
+{
+	struct task_struct *curr = current, *global = &init_task;
+	struct path gl_root;
+	struct path cr_root;
+	int chrooted;
+
+	get_fs_root(global->fs, &gl_root);
+	path_get(&gl_root);
+	while (d_mountpoint(gl_root.dentry) && follow_down_one(&gl_root))
+		;
+
+	get_fs_root(curr->fs, &cr_root);
+	path_get(&cr_root);
+	chrooted = !path_equal(&cr_root, &gl_root);
+
+	path_put(&cr_root);
+	path_put(&gl_root);
+
+	return (chrooted);
+}
+
+/*
  * Attempt to unmount a snapshot by making a call to user space.
  * There is no assurance that this can or will succeed, is just a
  * best effort.  In the case where it does fail, perhaps because
@@ -1121,6 +1192,36 @@ zfsctl_snapshot_mount(struct path *path, int flags)
 	    ZFS_MAX_DATASET_NAME_LEN, full_name);
 	if (error)
 		goto error;
+
+	if (is_current_chrooted() == 0) {
+		zfs_dbgmsg("current process is not chrooted");
+		if (zfsvfs->z_vfs->vfs_mntpoint != NULL) {
+			char *m = kmem_zalloc(MAXPATHLEN, KM_SLEEP);
+			struct path mnt_path;
+			mnt_path.mnt = path->mnt;
+			mnt_path.dentry = path->mnt->mnt_root;
+			if (get_root_path(&mnt_path, m, MAXPATHLEN) != 0) {
+				kmem_free(m, MAXPATHLEN);
+				goto error;
+			}
+			if (strcmp(zfsvfs->z_vfs->vfs_mntpoint, m) != 0) {
+				zfs_dbgmsg("vfs_mntpoint and m are not same");
+				zfs_dbgmsg("vfs_mntpoint: %s m: %s",
+				    zfsvfs->z_vfs->vfs_mntpoint, m);
+
+				kmem_strfree(zfsvfs->z_vfs->vfs_mntpoint);
+				zfsvfs->z_vfs->vfs_mntpoint = kmem_strdup(m);
+				kmem_free(m, MAXPATHLEN);
+
+				zfs_dbgmsg("vfs_mntpoint now set to: %s",
+				    zfsvfs->z_vfs->vfs_mntpoint);
+			} else {
+				zfs_dbgmsg("vfs_mntpoint and m are same");
+			}
+		}
+	} else {
+		zfs_dbgmsg("Current process is in chroot context");
+	}
 
 	/*
 	 * Construct a mount point path from sb of the ctldir inode and dirent
