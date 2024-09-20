@@ -273,8 +273,18 @@ zfs_userspace_one(zfsvfs_t *zfsvfs, zfs_userquota_prop_t type,
 		return (err);
 
 	err = zap_lookup(zfsvfs->z_os, obj, buf, 8, 1, valp);
-	if (err == ENOENT)
+	if ((err == ENOENT) &&
+	    ((type == ZFS_PROP_USERQUOTA) || (type == ZFS_PROP_GROUPQUOTA))) {
+		uint64_t defval;
+		(void) snprintf(buf, sizeof (buf), "%llx", (longlong_t)-1);
+		err = zap_lookup(zfsvfs->z_os, obj, buf, 8, 1, &defval);
+		if (err == 0)
+			*valp = defval;
+		else
+			err = 0;
+	} else if (err == ENOENT)
 		err = 0;
+
 	return (err);
 }
 
@@ -450,7 +460,12 @@ zfs_id_overblockquota(zfsvfs_t *zfsvfs, uint64_t usedobj, uint64_t id)
 
 	(void) snprintf(buf, sizeof (buf), "%llx", (longlong_t)id);
 	err = zap_lookup(zfsvfs->z_os, quotaobj, buf, 8, 1, &quota);
-	if (err != 0)
+	if (err = ENOENT) {
+		(void) snprintf(buf, sizeof (buf), "%llx", (longlong_t)-1);
+		err = zap_lookup(zfsvfs->z_os, quotaobj, buf, 8, 1, &quota);
+		if (err != 0)
+			return (B_FALSE);
+	} else if (err != 0)
 		return (B_FALSE);
 
 	err = zap_lookup(zfsvfs->z_os, usedobj, buf, 8, 1, &used);
