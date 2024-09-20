@@ -460,7 +460,7 @@ zfs_id_overblockquota(zfsvfs_t *zfsvfs, uint64_t usedobj, uint64_t id)
 
 	(void) snprintf(buf, sizeof (buf), "%llx", (longlong_t)id);
 	err = zap_lookup(zfsvfs->z_os, quotaobj, buf, 8, 1, &quota);
-	if (err = ENOENT) {
+	if (err == ENOENT) {
 		(void) snprintf(buf, sizeof (buf), "%llx", (longlong_t)-1);
 		err = zap_lookup(zfsvfs->z_os, quotaobj, buf, 8, 1, &quota);
 		if (err != 0)
