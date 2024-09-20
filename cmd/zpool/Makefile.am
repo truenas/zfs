@@ -141,6 +141,8 @@ dist_zpoolcompat_DATA = \
 	%D%/compatibility.d/freebsd-11.3 \
 	%D%/compatibility.d/freenas-9.10.2 \
 	%D%/compatibility.d/grub2 \
+	%D%/compatibility.d/grub2-2.06 \
+	%D%/compatibility.d/grub2-2.12 \
 	%D%/compatibility.d/openzfs-2.0-freebsd \
 	%D%/compatibility.d/openzfs-2.0-linux \
 	%D%/compatibility.d/openzfs-2.1-freebsd \
