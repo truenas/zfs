@@ -182,6 +182,10 @@ elif sys.platform.startswith('linux'):
         'casenorm/sensitive_formd_delete': ['FAIL', 7633],
         'removal/removal_with_zdb': ['SKIP', known_reason],
         'cli_root/zfs_unshare/zfs_unshare_002_pos': ['SKIP', na_reason],
+        'cli_root/zpool_expand/zpool_expand_005_pos': ['SKIP', na_reason],
+        'cli_root/zpool_reopen/zpool_reopen_005_pos': ['SKIP', na_reason],
+        'fault/auto_offline_001_pos': ['SKIP', na_reason],
+        'fault/auto_replace_001_pos': ['SKIP', na_reason],
     })
 
 
@@ -341,7 +345,6 @@ elif sys.platform.startswith('linux'):
         'cli_root/zpool_reopen/zpool_reopen_003_pos': ['FAIL', known_reason],
         'cp_files/cp_files_002_pos': ['SKIP', cfr_reason],
         'fault/auto_online_002_pos': ['FAIL', 11889],
-        'fault/auto_replace_001_pos': ['FAIL', 14851],
         'fault/auto_spare_002_pos': ['FAIL', 11889],
         'fault/auto_spare_multiple': ['FAIL', 11889],
         'fault/auto_spare_shared': ['FAIL', 11889],
