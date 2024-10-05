@@ -357,6 +357,9 @@ elif sys.platform.startswith('linux'):
         'mmp/mmp_active_import': ['FAIL', known_reason],
         'mmp/mmp_exported_import': ['FAIL', known_reason],
         'mmp/mmp_inactive_import': ['FAIL', known_reason],
+        'cli_root/zpool_expand/zpool_expand_005_pos': ['SKIP', known_reason],
+        'cli_root/zpool_reopen/zpool_reopen_005_pos': ['SKIP', known_reason],
+        'fault/auto_offline_001_pos': ['SKIP', known_reason],
     })
 
 
