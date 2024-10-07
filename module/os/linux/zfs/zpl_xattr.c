@@ -1749,12 +1749,6 @@ __zpl_xattr_nfs41acl_get(struct inode *ip, const char *name,
 	int ret, fl;
 	size_t xdr_size;
 
-	/* xattr_resolve_name will do this for us if this is defined */
-#ifndef HAVE_XATTR_HANDLER_NAME
-	if (strcmp(name, "") != 0)
-		return (-EINVAL);
-#endif
-
 	if (ITOZSB(ip)->z_acl_type != ZFS_ACLTYPE_NFSV4)
 		return (-EOPNOTSUPP);
 
@@ -1868,11 +1862,7 @@ ZPL_XATTR_SET_WRAPPER(zpl_xattr_nfs41acl_set);
  */
 xattr_handler_t zpl_xattr_nfs41acl_handler =
 {
-#ifdef HAVE_XATTR_HANDLER_NAME
 	.name	= NFS41ACL_XATTR,
-#else
-	.prefix	= NFS41ACL_XATTR,
-#endif
 	.list	= zpl_xattr_nfs41acl_list,
 	.get	= zpl_xattr_nfs41acl_get,
 	.set	= zpl_xattr_nfs41acl_set,
