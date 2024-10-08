@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: ZFS on Linux specific mailing list <zfs-discuss@list.zfsonlinux.org>
 Build-Depends: debhelper-compat (= 12),
                dh-python,
-               dh-sequence-dkms,
+               dh-sequence-dkms | dkms (>> 2.1.1.2-5),
                libaio-dev,
                libblkid-dev,
                libelf-dev,
