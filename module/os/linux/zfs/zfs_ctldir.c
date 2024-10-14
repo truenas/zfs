@@ -1097,12 +1097,17 @@ is_current_chrooted(void)
 	struct task_struct *curr = current, *global = &init_task;
 	struct path cr_root, gl_root;
 
-	get_fs_root(global->fs, &gl_root);
+	task_lock(curr);
 	get_fs_root(curr->fs, &cr_root);
-	int chrooted = !path_equal(&cr_root, &gl_root);
+	task_unlock(curr);
 
-	path_put(&cr_root);
+	task_lock(global);
+	get_fs_root(global->fs, &gl_root);
+	task_unlock(global);
+
+	int chrooted = !path_equal(&cr_root, &gl_root);
 	path_put(&gl_root);
+	path_put(&cr_root);
 
 	return (chrooted);
 }
@@ -1201,14 +1206,20 @@ zfsctl_snapshot_mount(struct path *path, int flags)
 		}
 		mutex_enter(&zfsvfs->z_vfs->vfs_mntpt_lock);
 		if (zfsvfs->z_vfs->vfs_mntpoint != NULL) {
+			zfs_dbgmsg("vfs_mntpoint is not NULL");
 			/*
 			 * If current mnountpoint and vfs_mntpoint are not same,
 			 * store current mountpoint in vfs_mntpoint.
 			 */
 			if (strcmp(zfsvfs->z_vfs->vfs_mntpoint, m) != 0) {
+				zfs_dbgmsg("vfs_mntpoint and current mountpoint are not same");
+				zfs_dbgmsg("vfs_mntpoint: %s current mountpoint: %s", zfsvfs->z_vfs->vfs_mntpoint, m);
 				kmem_strfree(zfsvfs->z_vfs->vfs_mntpoint);
 				zfsvfs->z_vfs->vfs_mntpoint = kmem_strdup(m);
 			}
+		} else {
+			zfs_dbgmsg("vfs_mntpoint is NULL");
+			zfsvfs->z_vfs->vfs_mntpoint = kmem_strdup(m);
 		}
 		mutex_exit(&zfsvfs->z_vfs->vfs_mntpt_lock);
 		kmem_free(m, MAXPATHLEN);
