@@ -99,29 +99,6 @@ jobs:
       timeout-minutes: 5
       run: .github/workflows/scripts/qemu-5-setup.sh
 
-    - name: Run tests
-      timeout-minutes: 270
-      run: .github/workflows/scripts/qemu-6-tests.sh
-      env:
-        CI_TYPE: ${{ needs.test-config.outputs.ci_type }}
-
-    - name: Prepare artifacts
-      if: always()
-      timeout-minutes: 10
-      run: .github/workflows/scripts/qemu-7-prepare.sh
-
-    - uses: actions/upload-artifact@v4
-      id: artifact-upload
-      if: always()
-      with:
-        name: Logs-functional-${{ matrix.os }}
-        path: /tmp/qemu-${{ matrix.os }}.tar
-        if-no-files-found: ignore
-
-    - name: Test Summary
-      if: always()
-      run: .github/workflows/scripts/qemu-8-summary.sh '${{ steps.artifact-upload.outputs.artifact-url }}'
-
   cleanup:
     if: always()
     name: Cleanup

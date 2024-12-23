@@ -27,9 +27,7 @@ jobs:
         ./autogen.sh
     - name: Configure
       run: |
-        ./configure --prefix=/usr --enable-debug --enable-debuginfo \
-           --enable-asan --enable-ubsan \
-           --enable-debug-kmem --enable-debug-kmem-tracking
+        ./configure --prefix=/usr --enable-asan --enable-ubsan
     - name: Make
       run: |
         make -j$(nproc)

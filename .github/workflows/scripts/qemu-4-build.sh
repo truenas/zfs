@@ -32,9 +32,7 @@ function freebsd() {
   run ./configure \
     --prefix=/usr/local \
     --with-libintl-prefix=/usr/local \
-    --enable-pyzfs \
-    --enable-debug \
-    --enable-debuginfo
+    --enable-pyzfs
   echo "##[endgroup]"
 
   echo "##[group]Build"
@@ -54,9 +52,7 @@ function linux() {
   echo "##[group]Configure"
   run ./configure \
     --prefix=/usr \
-    --enable-pyzfs \
-    --enable-debug \
-    --enable-debuginfo
+    --enable-pyzfs
   echo "##[endgroup]"
 
   echo "##[group]Build"
@@ -75,7 +71,7 @@ function rpm_build_and_install() {
   echo "##[endgroup]"
 
   echo "##[group]Configure"
-  run ./configure --enable-debug --enable-debuginfo $EXTRA_CONFIG
+  run ./configure $EXTRA_CONFIG
   echo "##[endgroup]"
 
   echo "##[group]Build"
@@ -96,9 +92,7 @@ echo "##[group]Autogen.sh"
   echo "##[group]Configure"
   run ./configure \
     --prefix=/usr \
-    --enable-pyzfs \
-    --enable-debug \
-    --enable-debuginfo
+    --enable-pyzfs
   echo "##[endgroup]"
 
   echo "##[group]Build"

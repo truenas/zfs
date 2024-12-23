@@ -23,7 +23,6 @@ jobs:
           sh autogen.sh
           ./configure
           cp -a contrib/debian debian
-          sed 's/@CFGOPTS@/--enable-debuginfo/g' debian/rules.in > debian/rules
           chmod +x debian/rules
           dch -b -M --force-distribution --distribution bullseye-truenas-unstable 'Tagged from zfs CI'
           debuild -us -uc -b
