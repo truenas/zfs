@@ -441,7 +441,7 @@ boolean_t
 zfsace_set_permset(zfsacl_entry_t _entry, zfsace_permset_t _permset)
 {
 	acl_entry_t entry = BSDACE(_entry);
-	int permset = 0;
+	unsigned int permset = 0;
 	int i, err;
 
 	for (i = 0; i < ARRAY_SIZE(bsdperm2nfs4perm); i++) {
