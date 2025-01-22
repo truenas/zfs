@@ -135,7 +135,8 @@ static int zfs_do_unzone(int argc, char **argv);
 static int zfs_do_help(int argc, char **argv);
 
 enum zfs_options {
-	ZFS_OPTION_JSON_NUMS_AS_INT = 1024
+	ZFS_OPTION_JSON_NUMS_AS_INT = 1024,
+	ZFS_OPTION_FORCE_PRESERVE_OLD = 1025
 };
 
 /*
@@ -321,12 +322,12 @@ get_usage(zfs_help_t idx)
 	case HELP_PROMOTE:
 		return (gettext("\tpromote <clone-filesystem>\n"));
 	case HELP_RECEIVE:
-		return (gettext("\treceive [-vMnsFhu] "
-		    "[-o <property>=<value>] ... [-x <property>] ...\n"
-		    "\t    <filesystem|volume|snapshot>\n"
-		    "\treceive [-vMnsFhu] [-o <property>=<value>] ... "
-		    "[-x <property>] ... \n"
-		    "\t    [-d | -e] <filesystem>\n"
+		return (gettext("\treceive [-vMnshu] [-F [--preserve-old]] "
+		    "[-o <property>=<value>] ...\n\t    "
+		    "[-x <property>] ... <filesystem|volume|snapshot>\n"
+		    "\treceive [-vMnshu] [-F [--preserve-old]] "
+		    "[-o <property>=<value>] ...\n\t    "
+		    "[-x <property>] ... [-d | -e] <filesystem>\n"
 		    "\treceive -A <filesystem|volume>\n"));
 	case HELP_RENAME:
 		return (gettext("\trename [-f] <filesystem|volume|snapshot> "
@@ -5130,8 +5131,16 @@ zfs_do_receive(int argc, char **argv)
 	if (nvlist_alloc(&props, NV_UNIQUE_NAME, 0) != 0)
 		nomem();
 
+	struct option long_options[] = {
+		{"force", no_argument, NULL, 'F'},
+		{"preserve-old", no_argument, NULL,
+		    ZFS_OPTION_FORCE_PRESERVE_OLD},
+		{0, 0, 0, 0}
+	};
+
 	/* check options */
-	while ((c = getopt(argc, argv, ":o:x:dehMnuvFsAc")) != -1) {
+	while ((c = getopt_long(argc, argv, ":o:x:dehMnuvFsAc", long_options,
+	    NULL)) != -1) {
 		switch (c) {
 		case 'o':
 			if (!parseprop(props, optarg)) {
@@ -5184,6 +5193,9 @@ zfs_do_receive(int argc, char **argv)
 		case 'F':
 			flags.force = B_TRUE;
 			break;
+		case ZFS_OPTION_FORCE_PRESERVE_OLD:
+			flags.preserveold = B_TRUE;
+			break;
 		case 'A':
 			abort_resumable = B_TRUE;
 			break;
@@ -5216,6 +5228,12 @@ zfs_do_receive(int argc, char **argv)
 	}
 	if (argc > 1) {
 		(void) fprintf(stderr, gettext("too many arguments\n"));
+		usage(B_FALSE);
+	}
+
+	if (!flags.force && flags.preserveold) {
+		(void) fprintf(stderr, gettext("'--preserve-old' only works"
+		    "'-F' option\n"));
 		usage(B_FALSE);
 	}
 

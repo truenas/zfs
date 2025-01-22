@@ -3545,6 +3545,7 @@ again:
 		nvlist_t *stream_nvfs = NULL;
 		nvpair_t *snapelem, *nextsnapelem;
 		uint64_t fromguid = 0;
+		uint64_t stream_guid = 0;
 		uint64_t originguid = 0;
 		uint64_t stream_originguid = 0;
 		uint64_t parent_fromsnap_guid, stream_parent_fromsnap_guid;
@@ -3570,8 +3571,10 @@ again:
 			thisguid = fnvpair_value_uint64(snapelem);
 			stream_nvfs = fsavl_find(stream_avl, thisguid, NULL);
 
-			if (stream_nvfs != NULL)
+			if (stream_nvfs != NULL) {
+				stream_guid = thisguid;
 				break;
+			}
 		}
 
 		/* check for promote */
@@ -3628,6 +3631,16 @@ again:
 				char name[ZFS_MAX_DATASET_NAME_LEN];
 
 				if (!flags->force)
+					continue;
+
+				/*
+				 * If we have --preserve-old flag set, check
+				 * current snapshot birth with the one found
+				 * in the stream. Only delete recent snapshots
+				 * but preserve older ones.
+				 */
+				if (flags->preserveold && created_before(hdl,
+				    local_avl, thisguid, stream_guid) == -1)
 					continue;
 
 				(void) snprintf(name, sizeof (name), "%s@%s",
