@@ -69,6 +69,8 @@ typedef struct vfs {
 	boolean_t	vfs_do_relatime;
 	boolean_t	vfs_nbmand;
 	boolean_t	vfs_do_nbmand;
+	boolean_t	vfs_snapdir;
+	boolean_t	vfs_do_snapdir;
 	kmutex_t	vfs_mntpt_lock;
 } vfs_t;
 

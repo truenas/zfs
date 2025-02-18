@@ -240,6 +240,10 @@ __zpl_show_options(struct seq_file *seq, zfsvfs_t *zfsvfs)
 		break;
 	}
 
+	seq_printf(seq, ",%s",
+	    zfsvfs->z_show_ctldir == ZFS_SNAPDIR_DISABLED ?
+	    "nosnapdir" : "snapdir");
+
 	return (0);
 }
 

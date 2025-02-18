@@ -83,6 +83,8 @@ enum {
 	TOKEN_NBMAND,
 	TOKEN_NONBMAND,
 	TOKEN_MNTPOINT,
+	TOKEN_SNAPDIR,
+	TOKEN_NOSNAPDIR,
 	TOKEN_LAST,
 };
 
@@ -105,6 +107,8 @@ static const match_table_t zpl_tokens = {
 	{ TOKEN_NORELATIME,	MNTOPT_NORELATIME },
 	{ TOKEN_NBMAND,		MNTOPT_NBMAND },
 	{ TOKEN_NONBMAND,	MNTOPT_NONBMAND },
+	{ TOKEN_SNAPDIR,	MNTOPT_SNAPDIR },
+	{ TOKEN_NOSNAPDIR,	MNTOPT_NOSNAPDIR },
 	{ TOKEN_MNTPOINT,	MNTOPT_MNTPOINT "=%s" },
 	{ TOKEN_LAST,		NULL },
 };
@@ -195,6 +199,14 @@ zfsvfs_parse_option(char *option, int token, substring_t *args, vfs_t *vfsp)
 	case TOKEN_NONBMAND:
 		vfsp->vfs_nbmand = B_FALSE;
 		vfsp->vfs_do_nbmand = B_TRUE;
+		break;
+	case TOKEN_SNAPDIR:
+		vfsp->vfs_snapdir = B_TRUE;
+		vfsp->vfs_do_snapdir = B_TRUE;
+		break;
+	case TOKEN_NOSNAPDIR:
+		vfsp->vfs_snapdir = B_FALSE;
+		vfsp->vfs_do_snapdir = B_TRUE;
 		break;
 	case TOKEN_MNTPOINT:
 		if (vfsp->vfs_mntpoint != NULL)
@@ -561,6 +573,9 @@ zfs_register_callbacks(vfs_t *vfsp)
 		relatime_changed_cb(zfsvfs, vfsp->vfs_relatime);
 	if (vfsp->vfs_do_nbmand)
 		nbmand_changed_cb(zfsvfs, vfsp->vfs_nbmand);
+	if (vfsp->vfs_do_snapdir)
+		snapdir_changed_cb(zfsvfs, vfsp->vfs_snapdir ?
+		   ZFS_SNAPDIR_HIDDEN : ZFS_SNAPDIR_DISABLED);
 
 	return (0);
 
@@ -632,6 +647,10 @@ zfs_get_temporary_prop(dsl_dataset_t *ds, zfs_prop_t zfs_prop, uint64_t *val,
 	case ZFS_PROP_NBMAND:
 		if (vfsp->vfs_do_nbmand)
 			tmp = vfsp->vfs_nbmand;
+		break;
+	case ZFS_PROP_SNAPDIR:
+		if (vfsp->vfs_do_snapdir)
+			tmp = vfsp->vfs_snapdir;
 		break;
 	default:
 		return (ENOENT);

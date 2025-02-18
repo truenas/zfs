@@ -111,5 +111,7 @@
 #define	MNTOPT_CASESENSITIVE	"casesensitive"		/* case sensitivity */
 #define	MNTOPT_CASEINSENSITIVE	"caseinsensitive"	/* case insensitivity */
 #define	MNTOPT_CASEMIXED	"casemixed"		/* case mixed */
+#define	MNTOPT_SNAPDIR		"snapdir"		/* hidden snapdir */
+#define	MNTOPT_NOSNAPDIR	"nosnapdir"		/* disabled snapdir */
 
 #endif	/* _SYS_MNTENT_H */
