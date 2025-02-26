@@ -1098,7 +1098,7 @@ zfs_blkptr_verify_log(spa_t *spa, const blkptr_t *bp,
  * it only contains known object types, checksum/compression identifiers,
  * block sizes within the maximum allowed limits, valid DVAs, etc.
  *
- * If everything checks out B_TRUE is returned.  The zfs_blkptr_verify
+ * If everything checks out 0 is returned.  The zfs_blkptr_verify
  * argument controls the behavior when an invalid field is detected.
  *
  * Values for blk_verify_flag:
@@ -1113,7 +1113,7 @@ zfs_blkptr_verify_log(spa_t *spa, const blkptr_t *bp,
  *   BLK_CONFIG_SKIP: skip checks which require SCL_VDEV, for better
  *   performance
  */
-boolean_t
+int
 zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp,
     enum blk_config_flag blk_config, enum blk_verify_flag blk_verify)
 {
@@ -1145,7 +1145,7 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp,
 			    "blkptr at %px has invalid PSIZE %llu",
 			    bp, (longlong_t)BPE_GET_PSIZE(bp));
 		}
-		return (errors == 0);
+		return (errors ? ECKSUM : 0);
 	}
 	if (unlikely(BP_GET_CHECKSUM(bp) >= ZIO_CHECKSUM_FUNCTIONS)) {
 		errors += zfs_blkptr_verify_log(spa, bp, blk_verify,
@@ -1163,7 +1163,7 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp,
 	 * will be done once the zio is executed in vdev_mirror_map_alloc.
 	 */
 	if (unlikely(!spa->spa_trust_config))
-		return (errors == 0);
+		return (errors ? ECKSUM : 0);
 
 	switch (blk_config) {
 	case BLK_CONFIG_HELD:
@@ -1172,8 +1172,12 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp,
 	case BLK_CONFIG_NEEDED:
 		spa_config_enter(spa, SCL_VDEV, bp, RW_READER);
 		break;
+	case BLK_CONFIG_NEEDED_TRY:
+		if (!spa_config_tryenter(spa, SCL_VDEV, bp, RW_READER))
+			return (EBUSY);
+		break;
 	case BLK_CONFIG_SKIP:
-		return (errors == 0);
+		return (errors ? ECKSUM : 0);
 	default:
 		panic("invalid blk_config %u", blk_config);
 	}
@@ -1228,10 +1232,11 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp,
 			    bp, i, (longlong_t)offset);
 		}
 	}
-	if (blk_config == BLK_CONFIG_NEEDED)
+	if (blk_config == BLK_CONFIG_NEEDED || blk_config ==
+	    BLK_CONFIG_NEEDED_TRY)
 		spa_config_exit(spa, SCL_VDEV, bp);
 
-	return (errors == 0);
+	return (errors ? ECKSUM : 0);
 }
 
 boolean_t
