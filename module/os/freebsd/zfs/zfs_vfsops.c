@@ -240,24 +240,36 @@ zfs_getquota(zfsvfs_t *zfsvfs, uid_t id, int isgroup, struct dqblk64 *dqp)
 {
 	int error = 0;
 	char buf[32];
-	uint64_t usedobj, quotaobj;
+	uint64_t usedobj, quotaobj, defaultquota;
 	uint64_t quota, used = 0;
 	timespec_t now;
 
 	usedobj = isgroup ? DMU_GROUPUSED_OBJECT : DMU_USERUSED_OBJECT;
 	quotaobj = isgroup ? zfsvfs->z_groupquota_obj : zfsvfs->z_userquota_obj;
+	defaultquota = isgroup ? zfsvfs->z_defaultgroupquota :
+	    zfsvfs->z_defaultuserquota;
 
-	if (quotaobj == 0 || zfsvfs->z_replay) {
+	if (zfsvfs->z_replay) {
 		error = ENOENT;
 		goto done;
 	}
 	(void) sprintf(buf, "%llx", (longlong_t)id);
-	if ((error = zap_lookup(zfsvfs->z_os, quotaobj,
-	    buf, sizeof (quota), 1, &quota)) != 0) {
-		dprintf("%s(%d): quotaobj lookup failed\n",
-		    __FUNCTION__, __LINE__);
-		goto done;
+	if (quotaobj == 0) {
+		if (defaultquota == 0) {
+			error = ENOENT;
+			goto done;
+		}
+		quota = defaultquota;
+	} else {
+		error = zap_lookup(zfsvfs->z_os, quotaobj, buf, sizeof (quota),
+		    1, &quota);
+		if (error && (quota = defaultquota) == 0) {
+			dprintf("%s(%d): quotaobj lookup failed\n",
+			    __FUNCTION__, __LINE__);
+			goto done;
+		}
 	}
+
 	/*
 	 * quota(8) uses bsoftlimit as "quoota", and hardlimit as "limit".
 	 * So we set them to be the same.
