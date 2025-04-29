@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*-
  * Copyright (c) 2011, 2012, 2013 Spectra Logic Corporation
  * All rights reserved.
