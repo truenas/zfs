@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -22,7 +23,7 @@
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2012, 2015 by Delphix. All rights reserved.
  * Copyright (c) 2017, Intel Corporation.
- * Copyright (c) 2024, Klara Inc.
+ * Copyright (c) 2024-2025, Klara, Inc.
  */
 
 /*
@@ -359,6 +360,31 @@ zio_inject_bitflip_cb(void *data, size_t len, void *private)
 	return (1);	/* stop after first flip */
 }
 
+/* Test if this zio matches the iotype from the injection record. */
+static boolean_t
+zio_match_iotype(zio_t *zio, uint32_t iotype)
+{
+	ASSERT3P(zio, !=, NULL);
+
+	/* Unknown iotype, maybe from a newer version of zinject. Reject it. */
+	if (iotype >= ZINJECT_IOTYPES)
+		return (B_FALSE);
+
+	/* Probe IOs only match IOTYPE_PROBE, regardless of their type. */
+	if (zio->io_flags & ZIO_FLAG_PROBE)
+		return (iotype == ZINJECT_IOTYPE_PROBE);
+
+	/* Standard IO types, match against ZIO type. */
+	if (iotype < ZINJECT_IOTYPE_ALL)
+		return (iotype == zio->io_type);
+
+	/* Match any standard IO type. */
+	if (iotype == ZINJECT_IOTYPE_ALL)
+		return (B_TRUE);
+
+	return (B_FALSE);
+}
+
 static int
 zio_handle_device_injection_impl(vdev_t *vd, zio_t *zio, int err1, int err2)
 {
@@ -367,9 +393,11 @@ zio_handle_device_injection_impl(vdev_t *vd, zio_t *zio, int err1, int err2)
 
 	/*
 	 * We skip over faults in the labels unless it's during device open
-	 * (i.e. zio == NULL) or a device flush (offset is meaningless)
+	 * (i.e. zio == NULL) or a device flush (offset is meaningless). We let
+	 * probe IOs through so we can match them to probe inject records.
 	 */
-	if (zio != NULL && zio->io_type != ZIO_TYPE_FLUSH) {
+	if (zio != NULL && zio->io_type != ZIO_TYPE_FLUSH &&
+	    !(zio->io_flags & ZIO_FLAG_PROBE)) {
 		uint64_t offset = zio->io_offset;
 
 		if (offset < VDEV_LABEL_START_SIZE ||
@@ -393,9 +421,8 @@ zio_handle_device_injection_impl(vdev_t *vd, zio_t *zio, int err1, int err2)
 			}
 
 			/* Handle type specific I/O failures */
-			if (zio != NULL &&
-			    handler->zi_record.zi_iotype != ZIO_TYPES &&
-			    handler->zi_record.zi_iotype != zio->io_type)
+			if (zio != NULL && !zio_match_iotype(zio,
+			    handler->zi_record.zi_iotype))
 				continue;
 
 			if (handler->zi_record.zi_error == err1 ||
@@ -608,10 +635,8 @@ zio_handle_io_delay(zio_t *zio)
 			continue;
 
 		/* also match on I/O type (e.g., -T read) */
-		if (handler->zi_record.zi_iotype != ZIO_TYPES &&
-		    handler->zi_record.zi_iotype != zio->io_type) {
+		if (!zio_match_iotype(zio, handler->zi_record.zi_iotype))
 			continue;
-		}
 
 		/*
 		 * Defensive; should never happen as the array allocation
