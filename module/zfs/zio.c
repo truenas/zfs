@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -145,9 +146,52 @@ static const int zio_buf_debug_limit = 16384;
 static const int zio_buf_debug_limit = 0;
 #endif
 
+typedef struct zio_stats {
+	kstat_named_t ziostat_total_allocations;
+	kstat_named_t ziostat_alloc_class_fallbacks;
+	kstat_named_t ziostat_gang_writes;
+	kstat_named_t ziostat_gang_multilevel;
+} zio_stats_t;
+
+static zio_stats_t zio_stats = {
+	{ "total_allocations",	KSTAT_DATA_UINT64 },
+	{ "alloc_class_fallbacks",	KSTAT_DATA_UINT64 },
+	{ "gang_writes",	KSTAT_DATA_UINT64 },
+	{ "gang_multilevel",	KSTAT_DATA_UINT64 },
+};
+
+struct {
+	wmsum_t ziostat_total_allocations;
+	wmsum_t ziostat_alloc_class_fallbacks;
+	wmsum_t ziostat_gang_writes;
+	wmsum_t ziostat_gang_multilevel;
+} ziostat_sums;
+
+#define	ZIOSTAT_BUMP(stat)	wmsum_add(&ziostat_sums.stat, 1);
+
+static kstat_t *zio_ksp;
+
 static inline void __zio_execute(zio_t *zio);
 
 static void zio_taskq_dispatch(zio_t *, zio_taskq_type_t, boolean_t);
+
+static int
+zio_kstats_update(kstat_t *ksp, int rw)
+{
+	zio_stats_t *zs = ksp->ks_data;
+	if (rw == KSTAT_WRITE)
+		return (EACCES);
+
+	zs->ziostat_total_allocations.value.ui64 =
+	    wmsum_value(&ziostat_sums.ziostat_total_allocations);
+	zs->ziostat_alloc_class_fallbacks.value.ui64 =
+	    wmsum_value(&ziostat_sums.ziostat_alloc_class_fallbacks);
+	zs->ziostat_gang_writes.value.ui64 =
+	    wmsum_value(&ziostat_sums.ziostat_gang_writes);
+	zs->ziostat_gang_multilevel.value.ui64 =
+	    wmsum_value(&ziostat_sums.ziostat_gang_multilevel);
+	return (0);
+}
 
 void
 zio_init(void)
@@ -158,6 +202,19 @@ zio_init(void)
 	    sizeof (zio_t), 0, NULL, NULL, NULL, NULL, NULL, 0);
 	zio_link_cache = kmem_cache_create("zio_link_cache",
 	    sizeof (zio_link_t), 0, NULL, NULL, NULL, NULL, NULL, 0);
+
+	wmsum_init(&ziostat_sums.ziostat_total_allocations, 0);
+	wmsum_init(&ziostat_sums.ziostat_alloc_class_fallbacks, 0);
+	wmsum_init(&ziostat_sums.ziostat_gang_writes, 0);
+	wmsum_init(&ziostat_sums.ziostat_gang_multilevel, 0);
+	zio_ksp = kstat_create("zfs", 0, "zio_stats",
+	    "misc", KSTAT_TYPE_NAMED, sizeof (zio_stats) /
+	    sizeof (kstat_named_t), KSTAT_FLAG_VIRTUAL);
+	if (zio_ksp != NULL) {
+		zio_ksp->ks_data = &zio_stats;
+		zio_ksp->ks_update = zio_kstats_update;
+		kstat_install(zio_ksp);
+	}
 
 	for (c = 0; c < SPA_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT; c++) {
 		size_t size = (c + 1) << SPA_MINBLOCKSHIFT;
@@ -285,6 +342,16 @@ zio_fini(void)
 		VERIFY3P(zio_buf_cache[i], ==, NULL);
 		VERIFY3P(zio_data_buf_cache[i], ==, NULL);
 	}
+
+	if (zio_ksp != NULL) {
+		kstat_delete(zio_ksp);
+		zio_ksp = NULL;
+	}
+
+	wmsum_fini(&ziostat_sums.ziostat_total_allocations);
+	wmsum_fini(&ziostat_sums.ziostat_alloc_class_fallbacks);
+	wmsum_fini(&ziostat_sums.ziostat_gang_writes);
+	wmsum_fini(&ziostat_sums.ziostat_gang_multilevel);
 
 	kmem_cache_destroy(zio_link_cache);
 	kmem_cache_destroy(zio_cache);
@@ -1146,6 +1213,16 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp,
 			    bp, (longlong_t)BPE_GET_PSIZE(bp));
 		}
 		return (errors ? ECKSUM : 0);
+	} else if (BP_IS_HOLE(bp)) {
+		/*
+		 * Holes are allowed (expected, even) to have no DVAs, no
+		 * checksum, and no psize.
+		 */
+		return (errors ? ECKSUM : 0);
+	} else if (unlikely(!DVA_IS_VALID(&bp->blk_dva[0]))) {
+		/* Non-hole, non-embedded BPs _must_ have at least one DVA */
+		errors += zfs_blkptr_verify_log(spa, bp, blk_verify,
+		    "blkptr at %px has no valid DVAs", bp);
 	}
 	if (unlikely(BP_GET_CHECKSUM(bp) >= ZIO_CHECKSUM_FUNCTIONS)) {
 		errors += zfs_blkptr_verify_log(spa, bp, blk_verify,
@@ -3558,7 +3635,7 @@ zio_ddt_child_write_done(zio_t *zio)
 		 * chain. We need to revert the entry back to what it was at
 		 * the last time it was successfully extended.
 		 */
-		ddt_phys_copy(ddp, orig, v);
+		ddt_phys_unextend(ddp, orig, v);
 		ddt_phys_clear(orig, v);
 
 		ddt_exit(ddt);
@@ -4063,6 +4140,7 @@ zio_dva_allocate(zio_t *zio)
 		mc = spa_preferred_class(spa, zio);
 		zio->io_metaslab_class = mc;
 	}
+	ZIOSTAT_BUMP(ziostat_total_allocations);
 
 	/*
 	 * Try allocating the block in the usual metaslab class.
@@ -4128,6 +4206,7 @@ zio_dva_allocate(zio_t *zio)
 			    error);
 		}
 
+		ZIOSTAT_BUMP(ziostat_alloc_class_fallbacks);
 		error = metaslab_alloc(spa, mc, zio->io_size, bp,
 		    zio->io_prop.zp_copies, zio->io_txg, NULL, flags,
 		    &zio->io_alloc_list, zio, zio->io_allocator);
@@ -4140,6 +4219,9 @@ zio_dva_allocate(zio_t *zio)
 			    spa_name(spa), zio, (u_longlong_t)zio->io_size,
 			    error);
 		}
+		ZIOSTAT_BUMP(ziostat_gang_writes);
+		if (flags & METASLAB_GANG_CHILD)
+			ZIOSTAT_BUMP(ziostat_gang_multilevel);
 		return (zio_write_gang_block(zio, mc));
 	}
 	if (error != 0) {
@@ -4231,6 +4313,7 @@ zio_alloc_zil(spa_t *spa, objset_t *os, uint64_t txg, blkptr_t *new_bp,
 	int flags = METASLAB_ZIL;
 	int allocator = (uint_t)cityhash1(os->os_dsl_dataset->ds_object)
 	    % spa->spa_alloc_count;
+	ZIOSTAT_BUMP(ziostat_total_allocations);
 	error = metaslab_alloc(spa, spa_log_class(spa), size, new_bp, 1,
 	    txg, NULL, flags, &io_alloc_list, NULL, allocator);
 	*slog = (error == 0);
@@ -4240,6 +4323,7 @@ zio_alloc_zil(spa_t *spa, objset_t *os, uint64_t txg, blkptr_t *new_bp,
 		    &io_alloc_list, NULL, allocator);
 	}
 	if (error != 0) {
+		ZIOSTAT_BUMP(ziostat_alloc_class_fallbacks);
 		error = metaslab_alloc(spa, spa_normal_class(spa), size,
 		    new_bp, 1, txg, NULL, flags,
 		    &io_alloc_list, NULL, allocator);
@@ -4432,16 +4516,6 @@ zio_vdev_io_start(zio_t *zio)
 	    zio->io_type == ZIO_TYPE_WRITE ||
 	    zio->io_type == ZIO_TYPE_TRIM)) {
 
-		if (zio_handle_device_injection(vd, zio, ENOSYS) != 0) {
-			/*
-			 * "no-op" injections return success, but do no actual
-			 * work. Just skip the remaining vdev stages.
-			 */
-			zio_vdev_io_bypass(zio);
-			zio_interrupt(zio);
-			return (NULL);
-		}
-
 		if ((zio = vdev_queue_io(zio)) == NULL)
 			return (NULL);
 
@@ -4451,6 +4525,15 @@ zio_vdev_io_start(zio_t *zio)
 			return (NULL);
 		}
 		zio->io_delay = gethrtime();
+
+		if (zio_handle_device_injection(vd, zio, ENOSYS) != 0) {
+			/*
+			 * "no-op" injections return success, but do no actual
+			 * work. Just return it.
+			 */
+			zio_delay_interrupt(zio);
+			return (NULL);
+		}
 	}
 
 	vd->vdev_ops->vdev_op_io_start(zio);

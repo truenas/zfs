@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -1882,7 +1883,7 @@ arc_hdr_decrypt(arc_buf_hdr_t *hdr, spa_t *spa, const zbookmark_phys_t *zb)
 error:
 	arc_hdr_free_abd(hdr, B_FALSE);
 	if (cabd != NULL)
-		arc_free_data_buf(hdr, cabd, arc_hdr_size(hdr), hdr);
+		arc_free_data_abd(hdr, cabd, arc_hdr_size(hdr), hdr);
 
 	return (ret);
 }

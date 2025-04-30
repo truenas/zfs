@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -99,6 +100,7 @@ extern boolean_t vdev_replace_in_progress(vdev_t *vdev);
 extern void vdev_hold(vdev_t *);
 extern void vdev_rele(vdev_t *);
 
+void vdev_update_nonallocating_space(vdev_t *vd, boolean_t add);
 extern int vdev_metaslab_init(vdev_t *vd, uint64_t txg);
 extern void vdev_metaslab_fini(vdev_t *vd);
 extern void vdev_metaslab_set_size(vdev_t *);
@@ -106,12 +108,12 @@ extern void vdev_expand(vdev_t *vd, uint64_t txg);
 extern void vdev_split(vdev_t *vd);
 extern void vdev_deadman(vdev_t *vd, const char *tag);
 
-typedef void vdev_xlate_func_t(void *arg, range_seg64_t *physical_rs);
+typedef void vdev_xlate_func_t(void *arg, zfs_range_seg64_t *physical_rs);
 
-extern boolean_t vdev_xlate_is_empty(range_seg64_t *rs);
-extern void vdev_xlate(vdev_t *vd, const range_seg64_t *logical_rs,
-    range_seg64_t *physical_rs, range_seg64_t *remain_rs);
-extern void vdev_xlate_walk(vdev_t *vd, const range_seg64_t *logical_rs,
+extern boolean_t vdev_xlate_is_empty(zfs_range_seg64_t *rs);
+extern void vdev_xlate(vdev_t *vd, const zfs_range_seg64_t *logical_rs,
+    zfs_range_seg64_t *physical_rs, zfs_range_seg64_t *remain_rs);
+extern void vdev_xlate_walk(vdev_t *vd, const zfs_range_seg64_t *logical_rs,
     vdev_xlate_func_t *func, void *arg);
 
 extern void vdev_get_stats_ex(vdev_t *vd, vdev_stat_t *vs, vdev_stat_ex_t *vsx);
