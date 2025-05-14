@@ -296,6 +296,7 @@
 #include <sys/dsl_pool.h>
 #include <sys/multilist.h>
 #include <sys/abd.h>
+#include <sys/dbuf.h>
 #include <sys/zil.h>
 #include <sys/fm/fs/zfs.h>
 #include <sys/callb.h>
@@ -4438,6 +4439,13 @@ arc_reduce_target_size(uint64_t to_free)
 	} else {
 		to_free = 0;
 	}
+
+	/*
+	 * Since dbuf cache size is a fraction of target ARC size, we should
+	 * notify dbuf about the reduction, which might be significant,
+	 * especially if current ARC size was much smaller than the target.
+	 */
+	dbuf_cache_reduce_target_size();
 
 	/*
 	 * Whether or not we reduced the target size, request eviction if the
