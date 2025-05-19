@@ -305,6 +305,18 @@ zfs_ioctl(vnode_t *vp, ulong_t com, intptr_t data, int flag, cred_t *cred,
 		*(offset_t *)data = off;
 		return (0);
 	}
+	case ZFS_IOC_REWRITE: {
+		zfs_rewrite_args_t *args = (zfs_rewrite_args_t *)data;
+		if ((flag & FWRITE) == 0)
+			return (SET_ERROR(EBADF));
+		error = vn_lock(vp, LK_SHARED);
+		if (error)
+			return (error);
+		error = zfs_rewrite(VTOZ(vp), args->off, args->len,
+		    args->flags, args->arg);
+		VOP_UNLOCK(vp);
+		return (error);
+	}
 	}
 	return (SET_ERROR(ENOTTY));
 }
@@ -518,7 +530,7 @@ mappedread(znode_t *zp, int nbytes, zfs_uio_t *uio)
 			page_unhold(pp);
 		} else {
 			error = dmu_read_uio_dbuf(sa_get_db(zp->z_sa_hdl),
-			    uio, bytes);
+			    uio, bytes, DMU_READ_PREFETCH);
 		}
 		len -= bytes;
 		off = 0;

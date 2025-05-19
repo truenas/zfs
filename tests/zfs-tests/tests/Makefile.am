@@ -275,6 +275,7 @@ nobase_dist_datadir_zfs_tests_tests_DATA += \
 	functional/events/events.cfg \
 	functional/events/events_common.kshlib \
 	functional/fault/fault.cfg \
+	functional/gang_blocks/gang_blocks.kshlib \
 	functional/grow/grow.cfg \
 	functional/history/history.cfg \
 	functional/history/history_common.kshlib \
@@ -860,6 +861,9 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/cli_root/zfs_reservation/setup.ksh \
 	functional/cli_root/zfs_reservation/zfs_reservation_001_pos.ksh \
 	functional/cli_root/zfs_reservation/zfs_reservation_002_pos.ksh \
+	functional/cli_root/zfs_rewrite/cleanup.ksh \
+	functional/cli_root/zfs_rewrite/setup.ksh \
+	functional/cli_root/zfs_rewrite/zfs_rewrite.ksh \
 	functional/cli_root/zfs_rollback/cleanup.ksh \
 	functional/cli_root/zfs_rollback/setup.ksh \
 	functional/cli_root/zfs_rollback/zfs_rollback_001_pos.ksh \
@@ -1556,6 +1560,10 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/features/large_dnode/large_dnode_008_pos.ksh \
 	functional/features/large_dnode/large_dnode_009_pos.ksh \
 	functional/features/large_dnode/setup.ksh \
+	functional/gang_blocks/cleanup.ksh \
+	functional/gang_blocks/gang_blocks_ddt_copies.ksh \
+	functional/gang_blocks/gang_blocks_redundant.ksh \
+	functional/gang_blocks/setup.ksh \
 	functional/grow/grow_pool_001_pos.ksh \
 	functional/grow/grow_replicas_001_pos.ksh \
 	functional/history/cleanup.ksh \

@@ -2125,7 +2125,7 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 	if (data != NULL) {
 		dmu_buf_t *db;
 		dnode_t *dn;
-		uint32_t flags = DMU_READ_NO_PREFETCH;
+		dmu_flags_t flags = DMU_READ_NO_PREFETCH;
 
 		if (rwa->raw)
 			flags |= DMU_READ_NO_DECRYPT;
@@ -2267,14 +2267,18 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 					dmu_write_by_dnode(dn,
 					    drrw->drr_offset,
 					    drrw->drr_logical_size,
-					    abd_to_buf(decomp_abd), tx);
+					    abd_to_buf(decomp_abd), tx,
+					    DMU_READ_NO_PREFETCH |
+					    DMU_UNCACHEDIO);
 				}
 				abd_free(decomp_abd);
 			} else {
 				dmu_write_by_dnode(dn,
 				    drrw->drr_offset,
 				    drrw->drr_logical_size,
-				    abd_to_buf(abd), tx);
+				    abd_to_buf(abd), tx,
+				    DMU_READ_NO_PREFETCH |
+				    DMU_UNCACHEDIO);
 			}
 			if (err == 0)
 				abd_free(abd);
@@ -2299,6 +2303,9 @@ flush_write_batch_impl(struct receive_writer_arg *rwa)
 				if (DMU_OT_IS_ENCRYPTED(zp.zp_type)) {
 					zp.zp_nopwrite = B_FALSE;
 					zp.zp_copies = MIN(zp.zp_copies,
+					    SPA_DVAS_PER_BP - 1);
+					zp.zp_gang_copies =
+					    MIN(zp.zp_gang_copies,
 					    SPA_DVAS_PER_BP - 1);
 				}
 				zio_flags |= ZIO_FLAG_RAW;
@@ -2394,10 +2401,10 @@ receive_process_write_record(struct receive_writer_arg *rwa,
 	if (rwa->heal) {
 		blkptr_t *bp;
 		dmu_buf_t *dbp;
-		int flags = DB_RF_CANFAIL;
+		dmu_flags_t flags = DB_RF_CANFAIL;
 
 		if (rwa->raw)
-			flags |= DB_RF_NO_DECRYPT;
+			flags |= DMU_READ_NO_DECRYPT;
 
 		if (rwa->byteswap) {
 			dmu_object_byteswap_t byteswap =
@@ -2554,8 +2561,8 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 		rwa->max_object = drrs->drr_object;
 
 	VERIFY0(dmu_bonus_hold(rwa->os, drrs->drr_object, FTAG, &db));
-	if ((err = dmu_spill_hold_by_bonus(db, DMU_READ_NO_DECRYPT, FTAG,
-	    &db_spill)) != 0) {
+	if ((err = dmu_spill_hold_by_bonus(db, DMU_READ_NO_DECRYPT |
+	    DB_RF_CANFAIL, FTAG, &db_spill)) != 0) {
 		dmu_buf_rele(db, FTAG);
 		return (err);
 	}
@@ -2608,7 +2615,8 @@ receive_spill(struct receive_writer_arg *rwa, struct drr_spill *drrs,
 
 	memcpy(abuf->b_data, abd_to_buf(abd), DRR_SPILL_PAYLOAD_SIZE(drrs));
 	abd_free(abd);
-	dbuf_assign_arcbuf((dmu_buf_impl_t *)db_spill, abuf, tx);
+	dbuf_assign_arcbuf((dmu_buf_impl_t *)db_spill, abuf, tx,
+	    DMU_UNCACHEDIO);
 
 	dmu_buf_rele(db, FTAG);
 	dmu_buf_rele(db_spill, FTAG);

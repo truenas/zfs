@@ -648,7 +648,7 @@ vdev_alloc_common(spa_t *spa, uint_t id, uint64_t guid, vdev_ops_t *ops)
 	if (spa->spa_root_vdev == NULL) {
 		ASSERT(ops == &vdev_root_ops);
 		spa->spa_root_vdev = vd;
-		spa->spa_load_guid = spa_generate_guid(NULL);
+		spa->spa_load_guid = spa_generate_load_guid();
 	}
 
 	if (guid == 0 && ops != &vdev_hole_ops) {
@@ -1490,12 +1490,11 @@ vdev_metaslab_group_create(vdev_t *vd)
 			mc = spa_normal_class(spa);
 		}
 
-		vd->vdev_mg = metaslab_group_create(mc, vd,
-		    spa->spa_alloc_count);
+		vd->vdev_mg = metaslab_group_create(mc, vd);
 
 		if (!vd->vdev_islog) {
 			vd->vdev_log_mg = metaslab_group_create(
-			    spa_embedded_log_class(spa), vd, 1);
+			    spa_embedded_log_class(spa), vd);
 		}
 
 		/*

@@ -981,9 +981,9 @@ extern void spa_iostats_trim_add(spa_t *spa, trim_type_t type,
     uint64_t extents_skipped, uint64_t bytes_skipped,
     uint64_t extents_failed, uint64_t bytes_failed);
 extern void spa_iostats_read_add(spa_t *spa, uint64_t size, uint64_t iops,
-    uint32_t flags);
+    dmu_flags_t flags);
 extern void spa_iostats_write_add(spa_t *spa, uint64_t size, uint64_t iops,
-    uint32_t flags);
+    dmu_flags_t flags);
 extern void spa_import_progress_add(spa_t *spa);
 extern void spa_import_progress_remove(uint64_t spa_guid);
 extern int spa_import_progress_set_mmp_check(uint64_t pool_guid,
@@ -1103,6 +1103,7 @@ extern boolean_t spa_guid_exists(uint64_t pool_guid, uint64_t device_guid);
 extern char *spa_strdup(const char *);
 extern void spa_strfree(char *);
 extern uint64_t spa_generate_guid(spa_t *spa);
+extern uint64_t spa_generate_load_guid(void);
 extern void snprintf_blkptr(char *buf, size_t buflen, const blkptr_t *bp);
 extern void spa_freeze(spa_t *spa);
 extern int spa_change_guid(spa_t *spa, const uint64_t *guidp);
