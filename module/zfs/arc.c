@@ -385,8 +385,8 @@ static int zfs_arc_overflow_shift = 8;
 /* log2(fraction of arc to reclaim) */
 uint_t arc_shrink_shift = 7;
 
-/* percent of pagecache to reclaim arc to */
 #ifdef _KERNEL
+/* percent of pagecache to reclaim arc to */
 uint_t zfs_arc_pc_percent = 0;
 #endif
 
@@ -6629,26 +6629,10 @@ arc_release(arc_buf_t *buf, const void *tag)
 	arc_state_t *state = hdr->b_l1hdr.b_state;
 	ASSERT3P(hash_lock, ==, HDR_LOCK(hdr));
 	ASSERT3P(state, !=, arc_anon);
+	ASSERT3P(state, !=, arc_l2c_only);
 
 	/* this buffer is not on any list */
 	ASSERT3S(zfs_refcount_count(&hdr->b_l1hdr.b_refcnt), >, 0);
-
-	if (HDR_HAS_L2HDR(hdr)) {
-		mutex_enter(&hdr->b_l2hdr.b_dev->l2ad_mtx);
-
-		/*
-		 * We have to recheck this conditional again now that
-		 * we're holding the l2ad_mtx to prevent a race with
-		 * another thread which might be concurrently calling
-		 * l2arc_evict(). In that case, l2arc_evict() might have
-		 * destroyed the header's L2 portion as we were waiting
-		 * to acquire the l2ad_mtx.
-		 */
-		if (HDR_HAS_L2HDR(hdr))
-			arc_hdr_l2hdr_destroy(hdr);
-
-		mutex_exit(&hdr->b_l2hdr.b_dev->l2ad_mtx);
-	}
 
 	/*
 	 * Do we have more than one buf?
@@ -6661,10 +6645,6 @@ arc_release(arc_buf_t *buf, const void *tag)
 		boolean_t protected = HDR_PROTECTED(hdr);
 		enum zio_compress compress = arc_hdr_get_compress(hdr);
 		arc_buf_contents_t type = arc_buf_type(hdr);
-		VERIFY3U(hdr->b_type, ==, type);
-
-		ASSERT(hdr->b_l1hdr.b_buf != buf || buf->b_next != NULL);
-		VERIFY3S(remove_reference(hdr, tag), >, 0);
 
 		if (ARC_BUF_SHARED(buf) && !ARC_BUF_COMPRESSED(buf)) {
 			ASSERT3P(hdr->b_l1hdr.b_buf, !=, buf);
@@ -6672,10 +6652,10 @@ arc_release(arc_buf_t *buf, const void *tag)
 		}
 
 		/*
-		 * Pull the data off of this hdr and attach it to
-		 * a new anonymous hdr. Also find the last buffer
+		 * Pull the buffer off of this hdr and find the last buffer
 		 * in the hdr's buffer list.
 		 */
+		VERIFY3S(remove_reference(hdr, tag), >, 0);
 		arc_buf_t *lastbuf = arc_buf_remove(hdr, buf);
 		ASSERT3P(lastbuf, !=, NULL);
 
@@ -6684,7 +6664,6 @@ arc_release(arc_buf_t *buf, const void *tag)
 		 * buffer, then we must stop sharing that block.
 		 */
 		if (ARC_BUF_SHARED(buf)) {
-			ASSERT3P(hdr->b_l1hdr.b_buf, !=, buf);
 			ASSERT(!arc_buf_is_shared(lastbuf));
 
 			/*
@@ -6706,7 +6685,6 @@ arc_release(arc_buf_t *buf, const void *tag)
 				abd_copy_from_buf(hdr->b_l1hdr.b_pabd,
 				    buf->b_data, psize);
 			}
-			VERIFY3P(lastbuf->b_data, !=, NULL);
 		} else if (HDR_SHARED_DATA(hdr)) {
 			/*
 			 * Uncompressed shared buffers are always at the end
@@ -6722,17 +6700,9 @@ arc_release(arc_buf_t *buf, const void *tag)
 		}
 
 		ASSERT(hdr->b_l1hdr.b_pabd != NULL || HDR_HAS_RABD(hdr));
-		ASSERT3P(state, !=, arc_l2c_only);
 
 		(void) zfs_refcount_remove_many(&state->arcs_size[type],
 		    arc_buf_size(buf), buf);
-
-		if (zfs_refcount_is_zero(&hdr->b_l1hdr.b_refcnt)) {
-			ASSERT3P(state, !=, arc_l2c_only);
-			(void) zfs_refcount_remove_many(
-			    &state->arcs_esize[type],
-			    arc_buf_size(buf), buf);
-		}
 
 		arc_cksum_verify(buf);
 		arc_buf_unwatch(buf);
@@ -6761,6 +6731,15 @@ arc_release(arc_buf_t *buf, const void *tag)
 		/* protected by hash lock, or hdr is on arc_anon */
 		ASSERT(!multilist_link_active(&hdr->b_l1hdr.b_arc_node));
 		ASSERT(!HDR_IO_IN_PROGRESS(hdr));
+
+		if (HDR_HAS_L2HDR(hdr)) {
+			mutex_enter(&hdr->b_l2hdr.b_dev->l2ad_mtx);
+			/* Recheck to prevent race with l2arc_evict(). */
+			if (HDR_HAS_L2HDR(hdr))
+				arc_hdr_l2hdr_destroy(hdr);
+			mutex_exit(&hdr->b_l2hdr.b_dev->l2ad_mtx);
+		}
+
 		hdr->b_l1hdr.b_mru_hits = 0;
 		hdr->b_l1hdr.b_mru_ghost_hits = 0;
 		hdr->b_l1hdr.b_mfu_hits = 0;
@@ -11223,8 +11202,10 @@ ZFS_MODULE_PARAM_CALL(zfs_arc, zfs_arc_, grow_retry, param_set_arc_int,
 ZFS_MODULE_PARAM_CALL(zfs_arc, zfs_arc_, shrink_shift, param_set_arc_int,
 	param_get_uint, ZMOD_RW, "log2(fraction of ARC to reclaim)");
 
+#ifdef _KERNEL
 ZFS_MODULE_PARAM(zfs_arc, zfs_arc_, pc_percent, UINT, ZMOD_RW,
 	"Percent of pagecache to reclaim ARC to");
+#endif
 
 ZFS_MODULE_PARAM(zfs_arc, zfs_arc_, average_blocksize, UINT, ZMOD_RD,
 	"Target average block size");

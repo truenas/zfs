@@ -144,9 +144,9 @@ typedef enum dmu_object_byteswap {
 #define	DMU_OT_IS_DDT(ot) \
 	((ot) == DMU_OT_DDT_ZAP)
 
-#define	DMU_OT_IS_CRITICAL(ot) \
+#define	DMU_OT_IS_CRITICAL(ot, level) \
 	(DMU_OT_IS_METADATA(ot) && \
-	(ot) != DMU_OT_DNODE && \
+	((ot) != DMU_OT_DNODE || (level) > 0) && \
 	(ot) != DMU_OT_DIRECTORY_CONTENTS && \
 	(ot) != DMU_OT_SA)
 
@@ -835,7 +835,7 @@ void dmu_tx_hold_append(dmu_tx_t *tx, uint64_t object, uint64_t off, int len);
 void dmu_tx_hold_append_by_dnode(dmu_tx_t *tx, dnode_t *dn, uint64_t off,
     int len);
 void dmu_tx_hold_clone_by_dnode(dmu_tx_t *tx, dnode_t *dn, uint64_t off,
-    int len);
+    uint64_t len, uint_t blksz);
 void dmu_tx_hold_free(dmu_tx_t *tx, uint64_t object, uint64_t off,
     uint64_t len);
 void dmu_tx_hold_free_by_dnode(dmu_tx_t *tx, dnode_t *dn, uint64_t off,
