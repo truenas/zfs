@@ -9074,6 +9074,108 @@ l2arc_sublist_lock(int list_num, int sublist_idx)
 }
 
 /*
+ * Count the number of L2ARC devices for a specific pool.
+ */
+static int
+l2arc_count_pool_devices(spa_t *target_spa)
+{
+	int count = 0;
+	l2arc_dev_t *dev;
+
+	ASSERT(MUTEX_HELD(&l2arc_dev_mtx));
+
+	for (dev = list_head(l2arc_dev_list); dev != NULL;
+	    dev = list_next(l2arc_dev_list, dev)) {
+		if (dev->l2ad_spa == target_spa) {
+			count++;
+		}
+	}
+
+	return (count);
+}
+
+/*
+ * Initialize pool-based markers for l2arc position saving.
+ */
+static void
+l2arc_pool_markers_init(spa_t *spa)
+{
+	spa->spa_l2arc_markers = kmem_zalloc(L2ARC_FEED_TYPES *
+	    sizeof (arc_buf_hdr_t **), KM_SLEEP);
+
+	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
+		multilist_t *ml = l2arc_get_list(pass);
+		if (ml == NULL)
+			continue;
+
+		int num_sublists = multilist_get_num_sublists(ml);
+
+		spa->spa_l2arc_markers[pass] = kmem_zalloc(num_sublists *
+		    sizeof (arc_buf_hdr_t *), KM_SLEEP);
+
+		for (int i = 0; i < num_sublists; i++) {
+			spa->spa_l2arc_markers[pass][i] =
+			    arc_state_alloc_marker();
+			multilist_sublist_t *mls =
+			    multilist_sublist_lock_idx(ml, i);
+			multilist_sublist_insert_tail(mls,
+			    spa->spa_l2arc_markers[pass][i]);
+			multilist_sublist_unlock(mls);
+		}
+	}
+}
+
+/*
+ * Free all allocated pool-based markers.
+ */
+static void
+l2arc_pool_markers_fini(spa_t *spa)
+{
+	if (spa->spa_l2arc_markers == NULL)
+		return;
+
+	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
+		if (spa->spa_l2arc_markers[pass] == NULL)
+			continue;
+
+		multilist_t *ml = l2arc_get_list(pass);
+		if (ml == NULL)
+			continue;
+
+		int num_sublists = multilist_get_num_sublists(ml);
+
+		for (int i = 0; i < num_sublists; i++) {
+			if (spa->spa_l2arc_markers[pass][i] != NULL) {
+				/*
+				 * Remove marker from sublist if referenced
+				 */
+				multilist_sublist_t *mls =
+				    multilist_sublist_lock_idx(ml, i);
+				if (multilist_link_active(
+				    &spa->spa_l2arc_markers[pass][i]->
+				    b_l1hdr.b_arc_node)) {
+					multilist_sublist_remove(mls,
+					    spa->spa_l2arc_markers[pass][i]);
+				}
+				multilist_sublist_unlock(mls);
+
+				arc_state_free_marker(
+				    spa->spa_l2arc_markers[pass][i]);
+				spa->spa_l2arc_markers[pass][i] = NULL;
+			}
+		}
+
+		kmem_free(spa->spa_l2arc_markers[pass], num_sublists *
+		    sizeof (arc_buf_hdr_t *));
+		spa->spa_l2arc_markers[pass] = NULL;
+	}
+
+	kmem_free(spa->spa_l2arc_markers, L2ARC_FEED_TYPES *
+	    sizeof (arc_buf_hdr_t **));
+	spa->spa_l2arc_markers = NULL;
+}
+
+/*
  * Calculates the maximum overhead of L2ARC metadata log blocks for a given
  * L2ARC write size. l2arc_evict and l2arc_write_size need to include this
  * overhead in processing to make sure there is enough headroom available
@@ -9448,22 +9550,37 @@ error:
  */
 static boolean_t
 l2arc_process_sublist(spa_t *spa, l2arc_dev_t *dev, multilist_sublist_t *mls,
-    arc_buf_hdr_t *marker, boolean_t from_head, uint64_t target_sz,
-    uint64_t *write_asize, uint64_t *write_psize, zio_t **pio,
-    l2arc_write_callback_t **cb, arc_buf_hdr_t *head, uint64_t *consumed,
-    uint64_t sublist_headroom, uint64_t guid)
+    arc_buf_hdr_t *marker, uint64_t target_sz, uint64_t *write_asize,
+    uint64_t *write_psize, zio_t **pio, l2arc_write_callback_t **cb,
+    arc_buf_hdr_t *head, uint64_t *consumed, uint64_t sublist_headroom,
+    uint64_t guid, int pass, int sublist_idx, boolean_t use_persistent_markers)
 {
 	arc_buf_hdr_t *hdr;
 	boolean_t full = B_FALSE;
+	arc_buf_hdr_t *persistent_marker = NULL;
+	boolean_t scan_from_head = B_FALSE;
 
-	/*
-	 * Until the ARC is warm and starts to evict, read from the
-	 * head of the ARC lists rather than the tail.
-	 */
-	if (from_head)
-		hdr = multilist_sublist_head(mls);
-	else
-		hdr = multilist_sublist_tail(mls);
+	if (use_persistent_markers) {
+		persistent_marker = spa->spa_l2arc_markers[pass][sublist_idx];
+		if (persistent_marker == multilist_sublist_head(mls)) {
+			return (full);
+		} else {
+			hdr = multilist_sublist_prev(mls, persistent_marker);
+			if (hdr != NULL) {
+				multilist_sublist_remove(mls,
+				    persistent_marker);
+			} else {
+				hdr = multilist_sublist_tail(mls);
+			}
+		}
+	} else {
+		if (arc_warm == B_FALSE) {
+			hdr = multilist_sublist_head(mls);
+			scan_from_head = B_TRUE;
+		} else {
+			hdr = multilist_sublist_tail(mls);
+		}
+	}
 
 	while (hdr != NULL) {
 		kmutex_t *hash_lock;
@@ -9473,7 +9590,7 @@ l2arc_process_sublist(spa_t *spa, l2arc_dev_t *dev, multilist_sublist_t *mls,
 		if (!mutex_tryenter(hash_lock)) {
 skip:
 			/* Skip this buffer rather than waiting. */
-			if (from_head)
+			if (scan_from_head)
 				hdr = multilist_sublist_next(mls, hdr);
 			else
 				hdr = multilist_sublist_prev(mls, hdr);
@@ -9521,11 +9638,7 @@ skip:
 		 * may block ARC eviction.  Insert a marker to save
 		 * the position and drop the lock.
 		 */
-		if (from_head) {
-			multilist_sublist_insert_after(mls, hdr, marker);
-		} else {
-			multilist_sublist_insert_before(mls, hdr, marker);
-		}
+		multilist_sublist_insert_before(mls, hdr, marker);
 		multilist_sublist_unlock(mls);
 
 		/*
@@ -9626,12 +9739,15 @@ skip:
 
 next:
 		multilist_sublist_lock(mls);
-		if (from_head)
+		if (scan_from_head)
 			hdr = multilist_sublist_next(mls, marker);
 		else
 			hdr = multilist_sublist_prev(mls, marker);
 		multilist_sublist_remove(mls, marker);
 	}
+
+	if (use_persistent_markers)
+		multilist_sublist_insert_head(mls, persistent_marker);
 
 	return (full);
 }
@@ -9664,7 +9780,7 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 {
 	arc_buf_hdr_t 		*head, *marker;
 	uint64_t 		write_asize, write_psize, headroom;
-	boolean_t		full, from_head = !arc_warm;
+	boolean_t		full;
 	l2arc_write_callback_t	*cb = NULL;
 	zio_t 			*pio;
 	uint64_t 		guid = spa_load_guid(spa);
@@ -9678,6 +9794,14 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	head = kmem_cache_alloc(hdr_l2only_cache, KM_PUSHPAGE);
 	arc_hdr_set_flags(head, ARC_FLAG_L2_WRITE_HEAD | ARC_FLAG_HAS_L2HDR);
 	marker = arc_state_alloc_marker();
+
+	/*
+	 * Determine L2ARC implementation based on device capacity vs ARC size.
+	 * Scan from tail for small devices, for larger devices, use persistent
+	 * marker approach to restart from last scan.
+	 */
+	uint64_t l2arc_capacity = dev->l2ad_end - dev->l2ad_start;
+	boolean_t use_persistent_markers = (l2arc_capacity >= arc_c);
 
 	/*
 	 * Copy buffers for L2ARC writing.
@@ -9724,9 +9848,10 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 			ASSERT3P(mls, !=, NULL);
 
 			full = l2arc_process_sublist(spa, dev, mls, marker,
-			    from_head, target_sz, &write_asize, &write_psize,
+			    target_sz, &write_asize, &write_psize,
 			    &pio, &cb, head, &consumed_headroom,
-			    sublist_headroom, guid);
+			    sublist_headroom, guid, pass, current_sublist,
+			    use_persistent_markers);
 
 			multilist_sublist_unlock(mls);
 			current_sublist = (current_sublist + 1) % num_sublists;
@@ -10057,6 +10182,15 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 	 * Add device to global list
 	 */
 	mutex_enter(&l2arc_dev_mtx);
+
+	/*
+	 * Initialize pool-based position saving markers if this is the first
+	 * L2ARC device for this pool
+	 */
+	if (l2arc_count_pool_devices(spa) == 0) {
+		l2arc_pool_markers_init(spa);
+	}
+
 	list_insert_head(l2arc_dev_list, adddev);
 	atomic_inc_64(&l2arc_ndev);
 	mutex_exit(&l2arc_dev_mtx);
@@ -10179,6 +10313,14 @@ l2arc_remove_vdev(vdev_t *vd)
 	list_remove(l2arc_dev_list, remdev);
 	l2arc_dev_last = NULL;		/* may have been invalidated */
 	atomic_dec_64(&l2arc_ndev);
+
+	/*
+	 * Clean up pool-based markers if this was the last L2ARC device
+	 * for this pool
+	 */
+	if (l2arc_count_pool_devices(spa) == 0) {
+		l2arc_pool_markers_fini(spa);
+	}
 
 	/* During a pool export spa & vdev will no longer be valid */
 	if (asynchronous) {

@@ -282,6 +282,7 @@ struct spa {
 	spa_aux_vdev_t	spa_spares;		/* hot spares */
 	spa_aux_vdev_t	spa_l2cache;		/* L2ARC cache devices */
 	boolean_t	spa_aux_sync_uber;	/* need to sync aux uber */
+	arc_buf_hdr_t	***spa_l2arc_markers;	/* l2arc persistent markers */
 	nvlist_t	*spa_label_features;	/* Features for reading MOS */
 	uint64_t	spa_config_object;	/* MOS object for pool config */
 	uint64_t	spa_config_generation;	/* config generation number */
