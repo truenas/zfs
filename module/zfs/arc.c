@@ -9074,12 +9074,11 @@ l2arc_sublist_lock(int list_num, int sublist_idx)
 }
 
 /*
- * Count the number of L2ARC devices for a specific pool.
+ * Check if a pool has any L2ARC devices.
  */
-static int
-l2arc_count_pool_devices(spa_t *target_spa)
+static boolean_t
+l2arc_pool_has_devices(spa_t *target_spa)
 {
-	int count = 0;
 	l2arc_dev_t *dev;
 
 	ASSERT(MUTEX_HELD(&l2arc_dev_mtx));
@@ -9087,11 +9086,11 @@ l2arc_count_pool_devices(spa_t *target_spa)
 	for (dev = list_head(l2arc_dev_list); dev != NULL;
 	    dev = list_next(l2arc_dev_list, dev)) {
 		if (dev->l2ad_spa == target_spa) {
-			count++;
+			return (B_TRUE);
 		}
 	}
 
-	return (count);
+	return (B_FALSE);
 }
 
 /*
@@ -9110,12 +9109,10 @@ l2arc_pool_markers_init(spa_t *spa)
 
 		int num_sublists = multilist_get_num_sublists(ml);
 
-		spa->spa_l2arc_markers[pass] = kmem_zalloc(num_sublists *
-		    sizeof (arc_buf_hdr_t *), KM_SLEEP);
+		spa->spa_l2arc_markers[pass] =
+		    arc_state_alloc_markers(num_sublists);
 
 		for (int i = 0; i < num_sublists; i++) {
-			spa->spa_l2arc_markers[pass][i] =
-			    arc_state_alloc_marker();
 			multilist_sublist_t *mls =
 			    multilist_sublist_lock_idx(ml, i);
 			multilist_sublist_insert_tail(mls,
@@ -9145,28 +9142,19 @@ l2arc_pool_markers_fini(spa_t *spa)
 		int num_sublists = multilist_get_num_sublists(ml);
 
 		for (int i = 0; i < num_sublists; i++) {
-			if (spa->spa_l2arc_markers[pass][i] != NULL) {
-				/*
-				 * Remove marker from sublist if referenced
-				 */
-				multilist_sublist_t *mls =
-				    multilist_sublist_lock_idx(ml, i);
-				if (multilist_link_active(
-				    &spa->spa_l2arc_markers[pass][i]->
-				    b_l1hdr.b_arc_node)) {
-					multilist_sublist_remove(mls,
-					    spa->spa_l2arc_markers[pass][i]);
-				}
-				multilist_sublist_unlock(mls);
-
-				arc_state_free_marker(
-				    spa->spa_l2arc_markers[pass][i]);
-				spa->spa_l2arc_markers[pass][i] = NULL;
-			}
+			ASSERT3P(spa->spa_l2arc_markers[pass][i], !=, NULL);
+			multilist_sublist_t *mls =
+			    multilist_sublist_lock_idx(ml, i);
+			ASSERT(multilist_link_active(
+			    &spa->spa_l2arc_markers[pass][i]->
+			    b_l1hdr.b_arc_node));
+			multilist_sublist_remove(mls,
+			    spa->spa_l2arc_markers[pass][i]);
+			multilist_sublist_unlock(mls);
 		}
 
-		kmem_free(spa->spa_l2arc_markers[pass], num_sublists *
-		    sizeof (arc_buf_hdr_t *));
+		arc_state_free_markers(spa->spa_l2arc_markers[pass],
+		    num_sublists);
 		spa->spa_l2arc_markers[pass] = NULL;
 	}
 
@@ -9638,7 +9626,10 @@ skip:
 		 * may block ARC eviction.  Insert a marker to save
 		 * the position and drop the lock.
 		 */
-		multilist_sublist_insert_before(mls, hdr, marker);
+		if (scan_from_head)
+			multilist_sublist_insert_after(mls, hdr, marker);
+		else
+			multilist_sublist_insert_before(mls, hdr, marker);
 		multilist_sublist_unlock(mls);
 
 		/*
@@ -10187,7 +10178,7 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 	 * Initialize pool-based position saving markers if this is the first
 	 * L2ARC device for this pool
 	 */
-	if (l2arc_count_pool_devices(spa) == 0) {
+	if (!l2arc_pool_has_devices(spa)) {
 		l2arc_pool_markers_init(spa);
 	}
 
@@ -10318,7 +10309,7 @@ l2arc_remove_vdev(vdev_t *vd)
 	 * Clean up pool-based markers if this was the last L2ARC device
 	 * for this pool
 	 */
-	if (l2arc_count_pool_devices(spa) == 0) {
+	if (!l2arc_pool_has_devices(spa)) {
 		l2arc_pool_markers_fini(spa);
 	}
 
