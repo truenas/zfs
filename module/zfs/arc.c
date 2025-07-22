@@ -9779,7 +9779,8 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	 * marker approach to restart from last scan.
 	 */
 	uint64_t l2arc_capacity = dev->l2ad_end - dev->l2ad_start;
-	boolean_t save_position = (l2arc_capacity >= arc_c);
+	uint64_t threshold = MIN((arc_c_max / 4), arc_c);
+	boolean_t save_position = (l2arc_capacity >= threshold);
 
 	/*
 	 * Copy buffers for L2ARC writing.
