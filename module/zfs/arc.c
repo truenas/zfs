@@ -9536,17 +9536,17 @@ error:
  */
 static boolean_t
 l2arc_process_sublist(spa_t *spa, l2arc_dev_t *dev, multilist_sublist_t *mls,
-    arc_buf_hdr_t *start_hdr, arc_buf_hdr_t *marker, uint64_t target_sz,
+    arc_buf_hdr_t *hdr, arc_buf_hdr_t *marker, uint64_t target_sz,
     uint64_t *write_asize, uint64_t *write_psize, zio_t **pio,
     l2arc_write_callback_t **cb, arc_buf_hdr_t *head, uint64_t *consumed,
-    uint64_t sublist_headroom)
+    uint64_t sublist_headroom, boolean_t save_position)
 {
-	arc_buf_hdr_t *hdr = start_hdr;
+	arc_buf_hdr_t *prev_hdr = NULL;
 	boolean_t full = B_FALSE;
 	boolean_t scan_from_head = B_FALSE;
 	uint64_t guid = spa_load_guid(spa);
 
-	if (start_hdr == multilist_sublist_head(mls))
+	if (hdr == multilist_sublist_head(mls))
 		scan_from_head = B_TRUE;
 
 	while (hdr != NULL) {
@@ -9708,12 +9708,25 @@ skip:
 		}
 
 next:
+		prev_hdr = hdr;
 		multilist_sublist_lock(mls);
 		if (scan_from_head)
 			hdr = multilist_sublist_next(mls, marker);
 		else
 			hdr = multilist_sublist_prev(mls, marker);
 		multilist_sublist_remove(mls, marker);
+	}
+
+	/*
+	 * Position persistent marker for next iteration
+	 */
+	if (save_position) {
+		if (prev_hdr != NULL)
+			multilist_sublist_insert_before(mls, prev_hdr, marker);
+		else
+			multilist_sublist_insert_head(mls, marker);
+	} else {
+		multilist_sublist_insert_tail(mls, marker);
 	}
 
 	return (full);
@@ -9759,7 +9772,6 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	full = B_FALSE;
 	head = kmem_cache_alloc(hdr_l2only_cache, KM_PUSHPAGE);
 	arc_hdr_set_flags(head, ARC_FLAG_L2_WRITE_HEAD | ARC_FLAG_HAS_L2HDR);
-	marker = arc_state_alloc_marker();
 
 	/*
 	 * Determine L2ARC implementation based on device capacity vs ARC size.
@@ -9767,7 +9779,7 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	 * marker approach to restart from last scan.
 	 */
 	uint64_t l2arc_capacity = dev->l2ad_end - dev->l2ad_start;
-	boolean_t use_persistent_markers = (l2arc_capacity >= arc_c);
+	boolean_t save_position = (l2arc_capacity >= arc_c);
 
 	/*
 	 * Copy buffers for L2ARC writing.
@@ -9813,45 +9825,38 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 			mls = l2arc_sublist_lock(pass, current_sublist);
 			ASSERT3P(mls, !=, NULL);
 
-			arc_buf_hdr_t *start_hdr;
-			arc_buf_hdr_t *persistent_marker = NULL;
+			arc_buf_hdr_t *hdr;
 			boolean_t skip_sublist = B_FALSE;
+			marker = spa->spa_l2arc_markers[pass][current_sublist];
 
-			if (use_persistent_markers) {
-				persistent_marker =
-				    spa->spa_l2arc_markers[pass][current_sublist];
-				if (persistent_marker ==
-				    multilist_sublist_head(mls)) {
-					skip_sublist = B_TRUE;
-				} else {
-					start_hdr = multilist_sublist_prev(mls,
-					    persistent_marker);
-					if (start_hdr != NULL) {
-						multilist_sublist_remove(mls,
-						    persistent_marker);
-					} else {
-						start_hdr =
-						    multilist_sublist_tail(mls);
-					}
-				}
+			if (marker == multilist_sublist_head(mls)) {
+				skip_sublist = B_TRUE;
+			} else if (save_position) {
+				hdr = multilist_sublist_prev(mls, marker);
+				if (hdr != NULL)
+					multilist_sublist_remove(mls, marker);
+				else
+					hdr = multilist_sublist_tail(mls);
 			} else {
-				if (arc_warm == B_FALSE) {
-					start_hdr = multilist_sublist_head(mls);
+				multilist_sublist_remove(mls, marker);
+				hdr = arc_warm ? multilist_sublist_tail(mls) :
+				    multilist_sublist_head(mls);
+				if (arc_warm) {
+					multilist_sublist_insert_tail(mls,
+					    marker);
 				} else {
-					start_hdr = multilist_sublist_tail(mls);
+					multilist_sublist_insert_head(mls,
+					    marker);
 				}
 			}
 
 			if (!skip_sublist) {
 				full = l2arc_process_sublist(spa, dev, mls,
-				    start_hdr, marker, target_sz, &write_asize,
+				    hdr, marker, target_sz, &write_asize,
 				    &write_psize, &pio, &cb, head,
-				    &consumed_headroom, sublist_headroom);
+				    &consumed_headroom, sublist_headroom,
+				    save_position);
 
-				if (use_persistent_markers) {
-					multilist_sublist_insert_head(mls,
-					    persistent_marker);
-				}
 			}
 
 			multilist_sublist_unlock(mls);
@@ -9862,8 +9867,6 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		if (full == B_TRUE)
 			break;
 	}
-
-	arc_state_free_marker(marker);
 
 	/* No buffers selected for writing? */
 	if (pio == NULL) {
