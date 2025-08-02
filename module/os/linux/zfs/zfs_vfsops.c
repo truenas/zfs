@@ -575,7 +575,7 @@ zfs_register_callbacks(vfs_t *vfsp)
 		nbmand_changed_cb(zfsvfs, vfsp->vfs_nbmand);
 	if (vfsp->vfs_do_snapdir)
 		snapdir_changed_cb(zfsvfs, vfsp->vfs_snapdir ?
-		   ZFS_SNAPDIR_HIDDEN : ZFS_SNAPDIR_DISABLED);
+		    ZFS_SNAPDIR_HIDDEN : ZFS_SNAPDIR_DISABLED);
 
 	return (0);
 
