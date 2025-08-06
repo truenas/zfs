@@ -9549,6 +9549,8 @@ l2arc_process_sublist(spa_t *spa, l2arc_dev_t *dev, multilist_sublist_t *mls,
 	if (hdr == multilist_sublist_head(mls))
 		scan_from_head = B_TRUE;
 
+	prev_hdr = hdr;
+
 	while (hdr != NULL) {
 		kmutex_t *hash_lock;
 		abd_t *to_write = NULL;
@@ -9721,10 +9723,7 @@ next:
 	 * Position persistent marker for next iteration
 	 */
 	if (save_position) {
-		if (prev_hdr != NULL)
-			multilist_sublist_insert_before(mls, prev_hdr, marker);
-		else
-			multilist_sublist_insert_head(mls, marker);
+		multilist_sublist_insert_before(mls, prev_hdr, marker);
 	} else {
 		multilist_sublist_insert_tail(mls, marker);
 	}
@@ -9834,21 +9833,13 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 				skip_sublist = B_TRUE;
 			} else if (save_position) {
 				hdr = multilist_sublist_prev(mls, marker);
-				if (hdr != NULL)
-					multilist_sublist_remove(mls, marker);
-				else
-					hdr = multilist_sublist_tail(mls);
+				ASSERT3P(hdr, !=, NULL);
+				multilist_sublist_remove(mls, marker);
 			} else {
 				multilist_sublist_remove(mls, marker);
 				hdr = arc_warm ? multilist_sublist_tail(mls) :
 				    multilist_sublist_head(mls);
-				if (arc_warm) {
-					multilist_sublist_insert_tail(mls,
-					    marker);
-				} else {
-					multilist_sublist_insert_head(mls,
-					    marker);
-				}
+				ASSERT3P(hdr, !=, NULL);
 			}
 
 			if (!skip_sublist) {
