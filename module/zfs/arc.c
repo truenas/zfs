@@ -9777,9 +9777,9 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	 * Scan from tail for small devices, for larger devices, use persistent
 	 * marker approach to restart from last scan.
 	 */
-	uint64_t l2arc_capacity = dev->l2ad_end - dev->l2ad_start;
-	uint64_t threshold = MIN((arc_c_max / 4), arc_c);
-	boolean_t save_position = (l2arc_capacity >= threshold);
+//	uint64_t l2arc_capacity = dev->l2ad_end - dev->l2ad_start;
+//	uint64_t threshold = MIN((arc_c_max / 4), arc_c);
+	boolean_t save_position = B_TRUE;//(l2arc_capacity >= threshold);
 
 	/*
 	 * Copy buffers for L2ARC writing.
