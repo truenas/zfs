@@ -9543,7 +9543,7 @@ l2arc_process_sublist(spa_t *spa, l2arc_dev_t *dev, multilist_sublist_t *mls,
     l2arc_write_callback_t **cb, arc_buf_hdr_t *head, uint64_t *consumed,
     uint64_t sublist_headroom, boolean_t save_position)
 {
-	arc_buf_hdr_t *prev_hdr = NULL;
+	arc_buf_hdr_t *prev_hdr = hdr;
 	boolean_t full = B_FALSE;
 	boolean_t scan_from_head = B_FALSE;
 	uint64_t guid = spa_load_guid(spa);
@@ -9554,6 +9554,7 @@ l2arc_process_sublist(spa_t *spa, l2arc_dev_t *dev, multilist_sublist_t *mls,
 	while (hdr != NULL) {
 		kmutex_t *hash_lock;
 		abd_t *to_write = NULL;
+		prev_hdr = hdr;
 
 		hash_lock = HDR_LOCK(hdr);
 		if (!mutex_tryenter(hash_lock)) {
@@ -9710,7 +9711,6 @@ skip:
 		}
 
 next:
-		prev_hdr = hdr;
 		multilist_sublist_lock(mls);
 		if (scan_from_head)
 			hdr = multilist_sublist_next(mls, marker);
@@ -9723,10 +9723,17 @@ next:
 	 * Position persistent marker for next iteration
 	 */
 	if (save_position) {
-		if (prev_hdr != NULL)
+		/*
+		 * Validate that prev_hdr still belongs to the current sublist.
+		 * During processing, the sublist lock is temporarily released,
+		 * allowing other threads to move/free headers. If prev_hdr was
+		 * moved to a different sublist or freed, inserting the marker
+		 * here would cause corruption.
+		 */
+		if (multilist_link_active(&prev_hdr->b_l1hdr.b_arc_node))
 			multilist_sublist_insert_before(mls, prev_hdr, marker);
 		else
-			multilist_sublist_insert_head(mls, marker);
+			multilist_sublist_insert_tail(mls, marker);
 	} else {
 		multilist_sublist_insert_tail(mls, marker);
 	}
@@ -9831,25 +9838,39 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 			boolean_t skip_sublist = B_FALSE;
 			marker = spa->spa_l2arc_markers[pass][current_sublist];
 
+			/*
+			 * Scenario 1: Marker at head indicates empty/fully
+			 * processed sublist. Skip processing since no work to
+			 * be done. Applies to both persistent and
+			 * non-persistent markers.
+			 */
 			if (marker == multilist_sublist_head(mls)) {
 				skip_sublist = B_TRUE;
+			/*
+			 * Scenario 2: Persistent marker (save_position = TRUE).
+			 * Resume from saved position (marker location in
+			 * sublist). Remove marker and start from previous
+			 * buffer. Since empty sublists are handled in Scenario
+			 * 1, hdr should never be NULL here. Marker will be
+			 * repositioned based on progress made.
+			 */
 			} else if (save_position) {
 				hdr = multilist_sublist_prev(mls, marker);
-				if (hdr != NULL)
-					multilist_sublist_remove(mls, marker);
-				else
-					hdr = multilist_sublist_tail(mls);
+				ASSERT3P(hdr, !=, NULL);
+				multilist_sublist_remove(mls, marker);
+			/*
+			 * Scenario 3: Non-persistent marker (save_position =
+			 * FALSE). Start fresh based on ARC warmup state.
+			 * arc_warm = TRUE: scan from tail (newest entries
+			 * first). arc_warm = FALSE: scan from head (oldest
+			 * entries first). Marker always reset to tail at end
+			 * regardless of scan direction.
+			 */
 			} else {
 				multilist_sublist_remove(mls, marker);
 				hdr = arc_warm ? multilist_sublist_tail(mls) :
 				    multilist_sublist_head(mls);
-				if (arc_warm) {
-					multilist_sublist_insert_tail(mls,
-					    marker);
-				} else {
-					multilist_sublist_insert_head(mls,
-					    marker);
-				}
+				ASSERT3P(hdr, !=, NULL);
 			}
 
 			if (!skip_sublist) {
@@ -9858,7 +9879,6 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 				    &write_psize, &pio, &cb, head,
 				    &consumed_headroom, sublist_headroom,
 				    save_position);
-
 			}
 
 			multilist_sublist_unlock(mls);
