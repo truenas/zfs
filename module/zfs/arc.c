@@ -9783,13 +9783,13 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	arc_hdr_set_flags(head, ARC_FLAG_L2_WRITE_HEAD | ARC_FLAG_HAS_L2HDR);
 
 	/*
-	 * Determine L2ARC implementation based on device capacity vs ARC size.
-	 * Scan from tail for small devices, for larger devices, use persistent
-	 * marker approach to restart from last scan.
+	 * Determine L2ARC implementation based on total pool L2ARC capacity
+	 * vs ARC size. Use persistent markers for pools with significant
+	 * L2ARC investment, otherwise use simple HEAD/TAIL scanning.
 	 */
-	uint64_t l2arc_capacity = dev->l2ad_end - dev->l2ad_start;
 	uint64_t threshold = MIN((arc_c_max / 4), arc_c);
-	boolean_t save_position = (l2arc_capacity >= threshold);
+	boolean_t save_position =
+	    (spa->spa_l2arc_total_capacity >= threshold);
 
 	/*
 	 * Copy buffers for L2ARC writing.
@@ -10220,6 +10220,8 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 
 	list_insert_head(l2arc_dev_list, adddev);
 	atomic_inc_64(&l2arc_ndev);
+	spa->spa_l2arc_total_capacity += (adddev->l2ad_end -
+	    adddev->l2ad_start);
 	mutex_exit(&l2arc_dev_mtx);
 }
 
@@ -10340,6 +10342,8 @@ l2arc_remove_vdev(vdev_t *vd)
 	list_remove(l2arc_dev_list, remdev);
 	l2arc_dev_last = NULL;		/* may have been invalidated */
 	atomic_dec_64(&l2arc_ndev);
+	spa->spa_l2arc_total_capacity -=
+	    (remdev->l2ad_end - remdev->l2ad_start);
 
 	/*
 	 * Clean up pool-based markers if this was the last L2ARC device
