@@ -9099,7 +9099,9 @@ l2arc_pool_has_devices(spa_t *target_spa)
 static void
 l2arc_pool_markers_init(spa_t *spa)
 {
-	spa->spa_l2arc_markers = kmem_zalloc(L2ARC_FEED_TYPES *
+	ASSERT(spa->spa_l2arc_info.l2arc_markers == NULL);
+
+	spa->spa_l2arc_info.l2arc_markers = kmem_zalloc(L2ARC_FEED_TYPES *
 	    sizeof (arc_buf_hdr_t **), KM_SLEEP);
 
 	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
@@ -9109,14 +9111,14 @@ l2arc_pool_markers_init(spa_t *spa)
 
 		int num_sublists = multilist_get_num_sublists(ml);
 
-		spa->spa_l2arc_markers[pass] =
+		spa->spa_l2arc_info.l2arc_markers[pass] =
 		    arc_state_alloc_markers(num_sublists);
 
 		for (int i = 0; i < num_sublists; i++) {
 			multilist_sublist_t *mls =
 			    multilist_sublist_lock_idx(ml, i);
 			multilist_sublist_insert_tail(mls,
-			    spa->spa_l2arc_markers[pass][i]);
+			    spa->spa_l2arc_info.l2arc_markers[pass][i]);
 			multilist_sublist_unlock(mls);
 		}
 	}
@@ -9128,11 +9130,10 @@ l2arc_pool_markers_init(spa_t *spa)
 static void
 l2arc_pool_markers_fini(spa_t *spa)
 {
-	if (spa->spa_l2arc_markers == NULL)
-		return;
+	ASSERT(spa->spa_l2arc_info.l2arc_markers != NULL);
 
 	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
-		if (spa->spa_l2arc_markers[pass] == NULL)
+		if (spa->spa_l2arc_info.l2arc_markers[pass] == NULL)
 			continue;
 
 		multilist_t *ml = l2arc_get_list(pass);
@@ -9142,25 +9143,26 @@ l2arc_pool_markers_fini(spa_t *spa)
 		int num_sublists = multilist_get_num_sublists(ml);
 
 		for (int i = 0; i < num_sublists; i++) {
-			ASSERT3P(spa->spa_l2arc_markers[pass][i], !=, NULL);
+			ASSERT3P(spa->spa_l2arc_info.l2arc_markers[pass][i],
+			    !=, NULL);
 			multilist_sublist_t *mls =
 			    multilist_sublist_lock_idx(ml, i);
 			ASSERT(multilist_link_active(
-			    &spa->spa_l2arc_markers[pass][i]->
+			    &spa->spa_l2arc_info.l2arc_markers[pass][i]->
 			    b_l1hdr.b_arc_node));
 			multilist_sublist_remove(mls,
-			    spa->spa_l2arc_markers[pass][i]);
+			    spa->spa_l2arc_info.l2arc_markers[pass][i]);
 			multilist_sublist_unlock(mls);
 		}
 
-		arc_state_free_markers(spa->spa_l2arc_markers[pass],
+		arc_state_free_markers(spa->spa_l2arc_info.l2arc_markers[pass],
 		    num_sublists);
-		spa->spa_l2arc_markers[pass] = NULL;
+		spa->spa_l2arc_info.l2arc_markers[pass] = NULL;
 	}
 
-	kmem_free(spa->spa_l2arc_markers, L2ARC_FEED_TYPES *
+	kmem_free(spa->spa_l2arc_info.l2arc_markers, L2ARC_FEED_TYPES *
 	    sizeof (arc_buf_hdr_t **));
-	spa->spa_l2arc_markers = NULL;
+	spa->spa_l2arc_info.l2arc_markers = NULL;
 }
 
 /*
@@ -9753,6 +9755,45 @@ l2arc_blk_fetch_done(zio_t *zio)
 }
 
 /*
+ * Reset all L2ARC markers to tail position for the given spa.
+ */
+static void
+l2arc_reset_all_markers(spa_t *spa)
+{
+	ASSERT(spa->spa_l2arc_info.l2arc_markers != NULL);
+
+	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
+		if (spa->spa_l2arc_info.l2arc_markers[pass] == NULL)
+			continue;
+
+		multilist_t *ml = l2arc_get_list(pass);
+		int num_sublists = multilist_get_num_sublists(ml);
+
+		for (int i = 0; i < num_sublists; i++) {
+			ASSERT3P(spa->spa_l2arc_info.l2arc_markers[pass][i],
+			    !=, NULL);
+			multilist_sublist_t *mls =
+			    multilist_sublist_lock_idx(ml, i);
+
+			/* Remove from current position */
+			ASSERT(multilist_link_active(&spa->spa_l2arc_info.
+			    l2arc_markers[pass][i]->b_l1hdr.b_arc_node));
+			multilist_sublist_remove(mls, spa->spa_l2arc_info.
+			    l2arc_markers[pass][i]);
+
+			/* Insert at tail (like initialization) */
+			multilist_sublist_insert_tail(mls,
+			    spa->spa_l2arc_info.l2arc_markers[pass][i]);
+
+			multilist_sublist_unlock(mls);
+		}
+	}
+
+	/* Reset write counter */
+	spa->spa_l2arc_info.l2arc_total_writes = 0;
+}
+
+/*
  * Find and write ARC buffers to the L2ARC device.
  *
  * An ARC_FLAG_L2_WRITING flag is set so that the L2ARC buffers are not valid
@@ -9789,7 +9830,15 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	 */
 	uint64_t threshold = MIN((arc_c_max / 4), arc_c);
 	boolean_t save_position =
-	    (spa->spa_l2arc_total_capacity >= threshold);
+	    (spa->spa_l2arc_info.l2arc_total_capacity >= threshold);
+
+	/*
+	 * Check if markers need reset based on smallest device threshold.
+	 * Reset when cumulative writes exceed 1/8th of smallest device.
+	 */
+	if (save_position && spa->spa_l2arc_info.l2arc_total_writes >=
+	    spa->spa_l2arc_info.l2arc_smallest_capacity / 8)
+		l2arc_reset_all_markers(spa);
 
 	/*
 	 * Copy buffers for L2ARC writing.
@@ -9837,7 +9886,8 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 
 			arc_buf_hdr_t *hdr;
 			boolean_t skip_sublist = B_FALSE;
-			marker = spa->spa_l2arc_markers[pass][current_sublist];
+			marker = spa->spa_l2arc_info.
+			    l2arc_markers[pass][current_sublist];
 
 			/*
 			 * Scenario 1: Marker at head indicates empty/fully
@@ -9917,6 +9967,11 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	dev->l2ad_writing = B_TRUE;
 	(void) zio_wait(pio);
 	dev->l2ad_writing = B_FALSE;
+
+	/*
+	 * Update cumulative write tracking for marker reset logic.
+	 */
+	spa->spa_l2arc_info.l2arc_total_writes += write_asize;
 
 	/*
 	 * Update the device header after the zio completes as
@@ -10144,6 +10199,29 @@ l2arc_rebuild_dev(l2arc_dev_t *dev, boolean_t reopen)
 	}
 }
 
+
+/*
+ * Recalculate smallest L2ARC device capacity for the given spa.
+ * Must be called under l2arc_dev_mtx.
+ */
+static void
+l2arc_update_smallest_capacity(spa_t *spa)
+{
+	ASSERT(MUTEX_HELD(&l2arc_dev_mtx));
+	l2arc_dev_t *dev;
+
+	spa->spa_l2arc_info.l2arc_smallest_capacity = UINT64_MAX;
+	for (dev = list_head(l2arc_dev_list); dev != NULL;
+	    dev = list_next(l2arc_dev_list, dev)) {
+		if (dev->l2ad_spa == spa) {
+			uint64_t cap = dev->l2ad_end - dev->l2ad_start;
+			if (cap < spa->spa_l2arc_info.l2arc_smallest_capacity)
+				spa->spa_l2arc_info.l2arc_smallest_capacity =
+				    cap;
+		}
+	}
+}
+
 /*
  * Add a vdev for use by the L2ARC.  By this point the spa has already
  * validated the vdev and opened it.
@@ -10220,8 +10298,9 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 
 	list_insert_head(l2arc_dev_list, adddev);
 	atomic_inc_64(&l2arc_ndev);
-	spa->spa_l2arc_total_capacity += (adddev->l2ad_end -
+	spa->spa_l2arc_info.l2arc_total_capacity += (adddev->l2ad_end -
 	    adddev->l2ad_start);
+	l2arc_update_smallest_capacity(spa);
 	mutex_exit(&l2arc_dev_mtx);
 }
 
@@ -10342,8 +10421,9 @@ l2arc_remove_vdev(vdev_t *vd)
 	list_remove(l2arc_dev_list, remdev);
 	l2arc_dev_last = NULL;		/* may have been invalidated */
 	atomic_dec_64(&l2arc_ndev);
-	spa->spa_l2arc_total_capacity -=
+	spa->spa_l2arc_info.l2arc_total_capacity -=
 	    (remdev->l2ad_end - remdev->l2ad_start);
+	l2arc_update_smallest_capacity(spa);
 
 	/*
 	 * Clean up pool-based markers if this was the last L2ARC device
