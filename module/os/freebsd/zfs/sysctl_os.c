@@ -278,17 +278,23 @@ SYSCTL_PROC(_vfs_zfs, OID_AUTO, arc_no_grow_shift,
 	NULL, 0, param_set_arc_no_grow_shift, "I",
 	"log2(fraction of ARC which must be free to allow growing) (LEGACY)");
 
-extern uint64_t l2arc_write_max;
-
-SYSCTL_UQUAD(_vfs_zfs, OID_AUTO, l2arc_write_max,
-	CTLFLAG_RWTUN, &l2arc_write_max, 0,
-	"Max write bytes per interval (LEGACY)");
-
 extern uint64_t l2arc_write_boost;
 
 SYSCTL_UQUAD(_vfs_zfs, OID_AUTO, l2arc_write_boost,
 	CTLFLAG_RWTUN, &l2arc_write_boost, 0,
 	"Extra write bytes during device warmup (LEGACY)");
+
+extern uint64_t l2arc_boost_threshold;
+
+SYSCTL_UQUAD(_vfs_zfs, OID_AUTO, l2arc_boost_threshold,
+	CTLFLAG_RWTUN, &l2arc_boost_threshold, 0,
+	"L2ARC usage threshold for boost mode (percentage) (LEGACY)");
+
+extern uint64_t l2arc_dwpd_limit;
+
+SYSCTL_UQUAD(_vfs_zfs, OID_AUTO, l2arc_dwpd_limit,
+	CTLFLAG_RWTUN, &l2arc_dwpd_limit, 0,
+	"L2ARC device write endurance limit (Drive Writes Per Day) (LEGACY)");
 
 extern uint64_t l2arc_headroom;
 

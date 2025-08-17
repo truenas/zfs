@@ -816,6 +816,8 @@ typedef struct arc_async_flush {
 
 #define	L2ARC_WRITE_SIZE	(32 * 1024 * 1024)	/* initial write max */
 #define	L2ARC_HEADROOM		8			/* num of writes */
+#define	L2ARC_MAX_BURST_RATE	(256 * 1024 * 1024)	/* DWPD Upper Bound  */
+#define	L2ARC_MIN_WRITE_SIZE	(1 * 1024 * 1024)	/* DWPD fallback  */
 
 /*
  * If we discover during ARC scan any buffers to be compressed, we boost
@@ -832,8 +834,9 @@ typedef struct arc_async_flush {
 #define	L2ARC_FEED_TYPES	4
 
 /* L2ARC Performance Tunables */
-uint64_t l2arc_write_max = L2ARC_WRITE_SIZE;	/* def max write size */
 uint64_t l2arc_write_boost = L2ARC_WRITE_SIZE;	/* extra warmup write */
+uint64_t l2arc_boost_threshold = 50;		/* boost when usage < 50% */
+uint64_t l2arc_dwpd_limit = 1;			/* default 1 DWPD limit */
 uint64_t l2arc_headroom = L2ARC_HEADROOM;	/* # of dev writes */
 uint64_t l2arc_headroom_boost = L2ARC_HEADROOM_BOOST;
 uint64_t l2arc_feed_secs = L2ARC_FEED_SECS;	/* interval seconds */
@@ -952,9 +955,9 @@ static int l2arc_mfuonly = 0;
 /*
  * L2ARC TRIM
  * l2arc_trim_ahead : A ZFS module parameter that controls how much ahead of
- * 		the current write size (l2arc_write_max) we should TRIM if we
- * 		have filled the device. It is defined as a percentage of the
- * 		write size. If set to 100 we trim twice the space required to
+ * 		the current write size we should TRIM if we have filled the
+ * 		device. It is defined as a percentage of the write size. If
+ * 		set to 100 we trim twice the space required to
  * 		accommodate upcoming writes. A minimum of 64MB will be trimmed.
  * 		It also enables TRIM of the whole L2ARC device upon creation or
  * 		addition to an existing pool or if the header of the device is
@@ -1017,6 +1020,7 @@ boolean_t l2arc_range_check_overlap(uint64_t bottom,
 static void l2arc_blk_fetch_done(zio_t *zio);
 static inline uint64_t
     l2arc_log_blk_overhead(uint64_t write_sz, l2arc_dev_t *dev);
+static uint64_t l2arc_dwpd_rate_limit(l2arc_dev_t *dev);
 
 /*
  * We use Cityhash for this. It's fast, and has good hash properties without
@@ -8318,8 +8322,9 @@ arc_fini(void)
  * The performance of the L2ARC can be tweaked by a number of tunables, which
  * may be necessary for different workloads:
  *
- *	l2arc_write_max		max write bytes per interval
+ *	l2arc_dwpd_limit	device write endurance limit in DWPD
  *	l2arc_write_boost	extra write bytes during device warmup
+ *	l2arc_boost_threshold	usage threshold for boost mode activation
  *	l2arc_noprefetch	skip caching prefetched buffers
  *	l2arc_headroom		number of max device writes to precache
  *	l2arc_headroom_boost	when we find compressed buffers during ARC
@@ -8460,19 +8465,17 @@ static uint64_t
 l2arc_write_size(l2arc_dev_t *dev)
 {
 	uint64_t size;
+	uint64_t capacity = dev->l2ad_end - dev->l2ad_start;
+	uint64_t allocated = zfs_refcount_count(&dev->l2ad_alloc);
+	uint64_t usage_percent = 0;
 
-	/*
-	 * Make sure our globals have meaningful values in case the user
-	 * altered them.
-	 */
-	size = l2arc_write_max;
-	if (size == 0) {
-		cmn_err(CE_NOTE, "l2arc_write_max must be greater than zero, "
-		    "resetting it to the default (%d)", L2ARC_WRITE_SIZE);
-		size = l2arc_write_max = L2ARC_WRITE_SIZE;
-	}
+	if (capacity > 0)
+		usage_percent = (allocated * 100) / capacity;
 
-	if (arc_warm == B_FALSE)
+	size = l2arc_dwpd_rate_limit(dev);
+
+	/* Enable boost mode when device usage is low */
+	if (usage_percent < l2arc_boost_threshold)
 		size += l2arc_write_boost;
 
 	/* We need to add in the worst case scenario of log block overhead. */
@@ -9188,6 +9191,34 @@ l2arc_log_blk_overhead(uint64_t write_sz, l2arc_dev_t *dev)
 		return (vdev_psize_to_asize(dev->l2ad_vdev,
 		    sizeof (l2arc_log_blk_phys_t)) * log_blocks);
 	}
+}
+
+/*
+ * Calculate DWPD-based rate limit for L2ARC device.
+ * Returns maximum bytes per second allowed based on DWPD budget.
+ */
+static uint64_t
+l2arc_dwpd_rate_limit(l2arc_dev_t *dev)
+{
+	vdev_t *vd = dev->l2ad_vdev;
+	hrtime_t now = gethrtime();
+	hrtime_t elapsed_ns = now - dev->l2ad_init_time;
+	uint64_t elapsed_sec = elapsed_ns / NANOSEC;
+	uint64_t allowed_so_far, dwpd_rate;
+
+	if (l2arc_dwpd_limit == 0 || elapsed_sec == 0)
+		return (L2ARC_WRITE_SIZE);
+
+	allowed_so_far = (vdev_get_min_asize(vd) * l2arc_dwpd_limit *
+	    elapsed_sec) / (24 * 3600);
+
+	if (dev->l2ad_total_writes < allowed_so_far) {
+		dwpd_rate = MAX(allowed_so_far - dev->l2ad_total_writes,
+		    L2ARC_MIN_WRITE_SIZE);
+		return (MIN(dwpd_rate, L2ARC_MAX_BURST_RATE));
+	}
+
+	return (L2ARC_WRITE_SIZE);
 }
 
 /*
@@ -9980,6 +10011,11 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	 */
 	l2arc_dev_hdr_update(dev);
 
+	/*
+	 * Track total bytes written for DWPD calculation
+	 */
+	dev->l2ad_total_writes += write_asize;
+
 	return (write_asize);
 }
 
@@ -10271,6 +10307,12 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 
 	vdev_space_update(vd, 0, 0, adddev->l2ad_end - adddev->l2ad_hand);
 	zfs_refcount_create(&adddev->l2ad_alloc);
+
+	/*
+	 * Initialize DWPD tracking fields
+	 */
+	adddev->l2ad_init_time = gethrtime();
+	adddev->l2ad_total_writes = 0;
 	zfs_refcount_create(&adddev->l2ad_lb_asize);
 	zfs_refcount_create(&adddev->l2ad_lb_count);
 
@@ -11511,11 +11553,16 @@ ZFS_MODULE_PARAM_CALL(zfs_arc, zfs_arc_, min_prescient_prefetch_ms,
     param_set_arc_int, param_get_uint, ZMOD_RW,
 	"Min life of prescient prefetched block in ms");
 
-ZFS_MODULE_PARAM(zfs_l2arc, l2arc_, write_max, U64, ZMOD_RW,
-	"Max write bytes per interval");
+ZFS_MODULE_PARAM(zfs_l2arc, l2arc_, dwpd_limit, U64, ZMOD_RW,
+	"L2ARC device write endurance limit in DWPD (Drive Writes Per Day). "
+	"Normal mode: limited by DWPD rate. "
+	"Boost mode: DWPD rate + boost amount");
 
 ZFS_MODULE_PARAM(zfs_l2arc, l2arc_, write_boost, U64, ZMOD_RW,
 	"Extra write bytes during device warmup");
+
+ZFS_MODULE_PARAM(zfs_l2arc, l2arc_, boost_threshold, U64, ZMOD_RW,
+	"L2ARC usage threshold for boost mode activation (percentage)");
 
 ZFS_MODULE_PARAM(zfs_l2arc, l2arc_, headroom, U64, ZMOD_RW,
 	"Number of max device writes to precache");

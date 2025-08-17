@@ -49,7 +49,7 @@ function cleanup
 
 	log_must rm -f $VDEVS
 	log_must set_tunable32 L2ARC_TRIM_AHEAD $l2arc_trimahead
-	log_must set_tunable32 L2ARC_WRITE_MAX $l2arc_writemax
+	log_must set_tunable32 L2ARC_DWPD_LIMIT $l2arc_dwpd_limit
 }
 log_onexit cleanup
 
@@ -57,9 +57,9 @@ log_onexit cleanup
 # dev->l2ad_hand loops around and dev->l2ad_first=0. Otherwise 
 # l2arc_evict() exits before evicting/trimming.
 typeset l2arc_trimahead=$(get_tunable L2ARC_TRIM_AHEAD)
-typeset l2arc_writemax=$(get_tunable L2ARC_WRITE_MAX)
+typeset l2arc_dwpd_limit=$(get_tunable L2ARC_DWPD_LIMIT)
 log_must set_tunable32 L2ARC_TRIM_AHEAD 1
-log_must set_tunable32 L2ARC_WRITE_MAX $((64 * 1024 * 1024))
+log_must set_tunable32 L2ARC_DWPD_LIMIT 16
 VDEVS="$TRIM_VDEV1 $TRIM_VDEV2"
 log_must truncate -s $((MINVDEVSIZE)) $TRIM_VDEV2
 log_must truncate -s $((4 * MINVDEVSIZE)) $TRIM_VDEV1
