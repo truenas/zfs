@@ -53,11 +53,13 @@ function cleanup
 		destroy_pool $TESTPOOL
 	fi
 
+	log_must set_tunable32 L2ARC_WRITE_MAX $write_max
 	log_must set_tunable32 L2ARC_DWPD_LIMIT $dwpd_limit
 	log_must set_tunable32 L2ARC_NOPREFETCH $noprefetch
 }
 log_onexit cleanup
 
+typeset write_max=$(get_tunable L2ARC_WRITE_MAX)
 typeset dwpd_limit=$(get_tunable L2ARC_DWPD_LIMIT)
 typeset noprefetch=$(get_tunable L2ARC_NOPREFETCH)
 log_must set_tunable32 L2ARC_NOPREFETCH 0
@@ -79,7 +81,8 @@ export SYNC_TYPE=0
 export DIRECT=0
 export FILE_SIZE=$(( floor($fill_mb / $NUMJOBS) ))
 
-log_must set_tunable32 L2ARC_DWPD_LIMIT 100
+log_must set_tunable32 L2ARC_WRITE_MAX $(( $VCACHE_SZ * 2 ))
+log_must set_tunable32 L2ARC_DWPD_LIMIT 0
 
 log_must truncate -s $VCACHE_SZ $VCACHE
 log_must truncate -s $VDEV_SZ $VDEV
@@ -92,7 +95,8 @@ log_must zfs set relatime=off $TESTPOOL
 log_must fio $FIO_SCRIPTS/mkfiles.fio
 log_must fio $FIO_SCRIPTS/random_reads.fio
 
-log_must set_tunable32 L2ARC_DWPD_LIMIT 50
+log_must set_tunable32 L2ARC_WRITE_MAX $(( 256 * 1024 * 1024 ))
+log_must set_tunable32 L2ARC_DWPD_LIMIT 0
 export RUNTIME=1
 
 typeset do_once=true

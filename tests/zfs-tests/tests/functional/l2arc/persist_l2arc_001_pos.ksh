@@ -58,7 +58,7 @@ function cleanup
 	if poolexists $TESTPOOL ; then
 		destroy_pool $TESTPOOL
 	fi
-
+	log_must set_tunable32 L2ARC_DWPD_LIMIT $l2arc_dwpd_limit
 	log_must set_tunable32 L2ARC_NOPREFETCH $noprefetch
 	log_must set_tunable32 L2ARC_REBUILD_BLOCKS_MIN_L2SIZE \
 		$rebuild_blocks_min_l2size
@@ -66,8 +66,10 @@ function cleanup
 log_onexit cleanup
 
 # L2ARC_NOPREFETCH is set to 0 to let L2ARC handle prefetches
+typeset l2arc_dwpd_limit=$(get_tunable L2ARC_DWPD_LIMIT)
 typeset noprefetch=$(get_tunable L2ARC_NOPREFETCH)
 typeset rebuild_blocks_min_l2size=$(get_tunable L2ARC_REBUILD_BLOCKS_MIN_L2SIZE)
+log_must set_tunable32 L2ARC_DWPD_LIMIT 0
 log_must set_tunable32 L2ARC_NOPREFETCH 0
 log_must set_tunable32 L2ARC_REBUILD_BLOCKS_MIN_L2SIZE 0
 
