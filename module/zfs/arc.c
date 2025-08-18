@@ -9209,7 +9209,7 @@ l2arc_dwpd_rate_limit(l2arc_dev_t *dev)
 	if (l2arc_dwpd_limit == 0 || elapsed_sec == 0)
 		return (L2ARC_WRITE_SIZE);
 
-	allowed_so_far = (vdev_get_min_asize(vd) * l2arc_dwpd_limit *
+	allowed_so_far = ((dev->l2ad_end - dev->l2ad_start) * l2arc_dwpd_limit *
 	    elapsed_sec) / (24 * 3600);
 
 	if (dev->l2ad_total_writes < allowed_so_far) {

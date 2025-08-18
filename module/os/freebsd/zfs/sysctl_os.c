@@ -288,13 +288,13 @@ extern uint64_t l2arc_boost_threshold;
 
 SYSCTL_UQUAD(_vfs_zfs, OID_AUTO, l2arc_boost_threshold,
 	CTLFLAG_RWTUN, &l2arc_boost_threshold, 0,
-	"L2ARC usage threshold for boost mode (percentage) (LEGACY)");
+	"L2ARC usage threshold for boost mode (percentage)");
 
 extern uint64_t l2arc_dwpd_limit;
 
 SYSCTL_UQUAD(_vfs_zfs, OID_AUTO, l2arc_dwpd_limit,
 	CTLFLAG_RWTUN, &l2arc_dwpd_limit, 0,
-	"L2ARC device write endurance limit (Drive Writes Per Day) (LEGACY)");
+	"L2ARC device write endurance limit (Drive Writes Per Day)");
 
 extern uint64_t l2arc_headroom;
 
