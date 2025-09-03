@@ -49,6 +49,11 @@ typedef struct l2arc_info {
 	uint64_t	l2arc_total_capacity;	/* total L2ARC capacity */
 	uint64_t	l2arc_total_writes;	/* total writes for reset */
 	uint64_t	l2arc_smallest_capacity; /* smallest device capacity */
+	/*
+	 * Per-device thread coordination for sublist processing
+	 */
+	boolean_t	**l2arc_sublist_busy;	/* [feed][sublist] busy flags */
+	kmutex_t	l2arc_sublist_lock;	/* protects markers */
 } l2arc_info_t;
 
 /*
@@ -436,6 +441,13 @@ typedef struct l2arc_dev {
 	 */
 	hrtime_t		l2ad_init_time;		/* device init time */
 	uint64_t		l2ad_total_writes;	/* total L2ARC writes */
+	/*
+	 * Per-device feed thread for parallel L2ARC writes
+	 */
+	kthread_t		*l2ad_feed_thread;	/* feed thread handle */
+	boolean_t		l2ad_thread_exit;	/* signal thread exit */
+	kmutex_t		l2ad_feed_thr_lock;	/* thread sleep/wake */
+	kcondvar_t		l2ad_feed_cv;		/* thread wakeup cv */
 } l2arc_dev_t;
 
 /*

@@ -834,7 +834,7 @@ typedef struct arc_async_flush {
 
 /* L2ARC Performance Tunables */
 uint64_t l2arc_write_max = L2ARC_WRITE_SIZE;	/* def max write size */
-uint64_t l2arc_dwpd_limit = 1;			/* default 1 DWPD limit */
+uint64_t l2arc_dwpd_limit = 0;			/* DWPD disabled for now */
 uint64_t l2arc_headroom = L2ARC_HEADROOM;	/* # of dev writes */
 uint64_t l2arc_headroom_boost = L2ARC_HEADROOM_BOOST;
 uint64_t l2arc_feed_secs = L2ARC_FEED_SECS;	/* interval seconds */
@@ -850,7 +850,6 @@ static uint_t l2arc_meta_percent = 33;	/* limit on headers size */
 static list_t L2ARC_dev_list;			/* device list */
 static list_t *l2arc_dev_list;			/* device list pointer */
 static kmutex_t l2arc_dev_mtx;			/* device list mutex */
-static l2arc_dev_t *l2arc_dev_last;		/* last device used */
 static list_t L2ARC_free_on_write;		/* free after write buf list */
 static list_t *l2arc_free_on_write;		/* free after write list ptr */
 static kmutex_t l2arc_free_on_write_mtx;	/* mutex for list */
@@ -885,10 +884,6 @@ typedef enum arc_ovf_level {
 	ARC_OVF_SOME,			/* ARC is slightly overflowed. */
 	ARC_OVF_SEVERE			/* ARC is severely overflowed. */
 } arc_ovf_level_t;
-
-static kmutex_t l2arc_feed_thr_lock;
-static kcondvar_t l2arc_feed_thr_cv;
-static uint8_t l2arc_thread_exit;
 
 static kmutex_t l2arc_rebuild_thr_lock;
 static kcondvar_t l2arc_rebuild_thr_cv;
@@ -1018,7 +1013,13 @@ boolean_t l2arc_range_check_overlap(uint64_t bottom,
 static void l2arc_blk_fetch_done(zio_t *zio);
 static inline uint64_t
     l2arc_log_blk_overhead(uint64_t write_sz, l2arc_dev_t *dev);
+
+#if 0
+/*
+ * TODO: Re-enable when DWPD calculation is finalized
+ */
 static uint64_t l2arc_dwpd_rate_limit(l2arc_dev_t *dev);
+#endif
 
 /*
  * We use Cityhash for this. It's fast, and has good hash properties without
@@ -8473,8 +8474,10 @@ l2arc_write_size(l2arc_dev_t *dev)
 		l2arc_write_max = L2ARC_WRITE_SIZE;
 	}
 
-	/* DWPD rate bounded by user-configured maximum */
-	size = MIN(l2arc_dwpd_rate_limit(dev), l2arc_write_max);
+	/*
+	 * DWPD disabled for now - use l2arc_write_max
+	 */
+	size = l2arc_write_max;
 
 	/* We need to add in the worst case scenario of log block overhead. */
 	size += l2arc_log_blk_overhead(size, dev);
@@ -8518,80 +8521,6 @@ l2arc_write_interval(clock_t began, uint64_t wanted, uint64_t wrote)
 
 	now = ddi_get_lbolt();
 	next = MAX(now, MIN(now + interval, began + interval));
-
-	return (next);
-}
-
-static boolean_t
-l2arc_dev_invalid(const l2arc_dev_t *dev)
-{
-	/*
-	 * We want to skip devices that are being rebuilt, trimmed,
-	 * removed, or belong to a spa that is being exported.
-	 */
-	return (dev->l2ad_vdev == NULL || vdev_is_dead(dev->l2ad_vdev) ||
-	    dev->l2ad_rebuild || dev->l2ad_trim_all ||
-	    dev->l2ad_spa == NULL || dev->l2ad_spa->spa_is_exporting);
-}
-
-/*
- * Cycle through L2ARC devices.  This is how L2ARC load balances.
- * If a device is returned, this also returns holding the spa config lock.
- */
-static l2arc_dev_t *
-l2arc_dev_get_next(void)
-{
-	l2arc_dev_t *first, *next = NULL;
-
-	/*
-	 * Lock out the removal of spas (spa_namespace_lock), then removal
-	 * of cache devices (l2arc_dev_mtx).  Once a device has been selected,
-	 * both locks will be dropped and a spa config lock held instead.
-	 */
-	mutex_enter(&spa_namespace_lock);
-	mutex_enter(&l2arc_dev_mtx);
-
-	/* if there are no vdevs, there is nothing to do */
-	if (l2arc_ndev == 0)
-		goto out;
-
-	first = NULL;
-	next = l2arc_dev_last;
-	do {
-		/* loop around the list looking for a non-faulted vdev */
-		if (next == NULL) {
-			next = list_head(l2arc_dev_list);
-		} else {
-			next = list_next(l2arc_dev_list, next);
-			if (next == NULL)
-				next = list_head(l2arc_dev_list);
-		}
-
-		/* if we have come back to the start, bail out */
-		if (first == NULL)
-			first = next;
-		else if (next == first)
-			break;
-
-		ASSERT3P(next, !=, NULL);
-	} while (l2arc_dev_invalid(next));
-
-	/* if we were unable to find any usable vdevs, return NULL */
-	if (l2arc_dev_invalid(next))
-		next = NULL;
-
-	l2arc_dev_last = next;
-
-out:
-	mutex_exit(&l2arc_dev_mtx);
-
-	/*
-	 * Grab the config lock to prevent the 'next' device from being
-	 * removed while we are writing to it.
-	 */
-	if (next != NULL)
-		spa_config_enter(next->l2ad_spa, SCL_L2ARC, next, RW_READER);
-	mutex_exit(&spa_namespace_lock);
 
 	return (next);
 }
@@ -9105,6 +9034,13 @@ l2arc_pool_markers_init(spa_t *spa)
 	spa->spa_l2arc_info.l2arc_markers = kmem_zalloc(L2ARC_FEED_TYPES *
 	    sizeof (arc_buf_hdr_t **), KM_SLEEP);
 
+	/* Initialize sublist busy flags for multi-threaded coordination */
+	ASSERT(spa->spa_l2arc_info.l2arc_sublist_busy == NULL);
+	spa->spa_l2arc_info.l2arc_sublist_busy = kmem_zalloc(L2ARC_FEED_TYPES *
+	    sizeof (boolean_t *), KM_SLEEP);
+	mutex_init(&spa->spa_l2arc_info.l2arc_sublist_lock, NULL,
+	    MUTEX_DEFAULT, NULL);
+
 	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
 		multilist_t *ml = l2arc_get_list(pass);
 		if (ml == NULL)
@@ -9114,6 +9050,8 @@ l2arc_pool_markers_init(spa_t *spa)
 
 		spa->spa_l2arc_info.l2arc_markers[pass] =
 		    arc_state_alloc_markers(num_sublists);
+		spa->spa_l2arc_info.l2arc_sublist_busy[pass] =
+		    kmem_zalloc(num_sublists * sizeof (boolean_t), KM_SLEEP);
 
 		for (int i = 0; i < num_sublists; i++) {
 			multilist_sublist_t *mls =
@@ -9159,11 +9097,24 @@ l2arc_pool_markers_fini(spa_t *spa)
 		arc_state_free_markers(spa->spa_l2arc_info.l2arc_markers[pass],
 		    num_sublists);
 		spa->spa_l2arc_info.l2arc_markers[pass] = NULL;
+
+		/* Free sublist busy flags for this pass */
+		ASSERT3P(spa->spa_l2arc_info.l2arc_sublist_busy[pass], !=,
+		    NULL);
+		kmem_free(spa->spa_l2arc_info.l2arc_sublist_busy[pass],
+		    num_sublists * sizeof (boolean_t));
+		spa->spa_l2arc_info.l2arc_sublist_busy[pass] = NULL;
 	}
 
 	kmem_free(spa->spa_l2arc_info.l2arc_markers, L2ARC_FEED_TYPES *
 	    sizeof (arc_buf_hdr_t **));
 	spa->spa_l2arc_info.l2arc_markers = NULL;
+
+	/* Free sublist busy flags array and destroy mutex */
+	kmem_free(spa->spa_l2arc_info.l2arc_sublist_busy, L2ARC_FEED_TYPES *
+	    sizeof (boolean_t *));
+	spa->spa_l2arc_info.l2arc_sublist_busy = NULL;
+	mutex_destroy(&spa->spa_l2arc_info.l2arc_sublist_lock);
 }
 
 /*
@@ -9194,7 +9145,11 @@ l2arc_log_blk_overhead(uint64_t write_sz, l2arc_dev_t *dev)
 /*
  * Calculate DWPD-based rate limit for L2ARC device.
  * Returns maximum bytes allowed based on DWPD budget.
+ *
+ * TODO: Re-enable when DWPD calculation is finalized based on workload.
+ * Currently disabled as the calculation needs refinement.
  */
+#if 0
 static uint64_t
 l2arc_dwpd_rate_limit(l2arc_dev_t *dev)
 {
@@ -9218,6 +9173,7 @@ l2arc_dwpd_rate_limit(l2arc_dev_t *dev)
 	/* DWPD budget exhausted, allow minimal writes */
 	return (L2ARC_MIN_WRITE_SIZE);
 }
+#endif
 
 /*
  * Evict buffers from the device write hand to the distance specified in
@@ -9790,6 +9746,7 @@ static void
 l2arc_reset_all_markers(spa_t *spa)
 {
 	ASSERT(spa->spa_l2arc_info.l2arc_markers != NULL);
+	ASSERT(MUTEX_HELD(&spa->spa_l2arc_info.l2arc_sublist_lock));
 
 	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
 		if (spa->spa_l2arc_info.l2arc_markers[pass] == NULL)
@@ -9864,10 +9821,14 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	/*
 	 * Check if markers need reset based on smallest device threshold.
 	 * Reset when cumulative writes exceed 1/8th of smallest device.
+	 * Must be protected since multiple device threads may check/update.
 	 */
+	mutex_enter(&spa->spa_l2arc_info.l2arc_sublist_lock);
 	if (save_position && spa->spa_l2arc_info.l2arc_total_writes >=
-	    spa->spa_l2arc_info.l2arc_smallest_capacity / 8)
+	    spa->spa_l2arc_info.l2arc_smallest_capacity / 8) {
 		l2arc_reset_all_markers(spa);
+	}
+	mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
 
 	/*
 	 * Copy buffers for L2ARC writing.
@@ -9910,6 +9871,26 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 
 			if (sublist_headroom == 0)
 				break;
+
+			/*
+			 * Check if sublist is busy (being processed by another
+			 * L2ARC device thread). If so, skip to next sublist.
+			 */
+			mutex_enter(&spa->spa_l2arc_info.l2arc_sublist_lock);
+			if (spa->spa_l2arc_info.l2arc_sublist_busy[pass]
+			    [current_sublist]) {
+				mutex_exit(&spa->spa_l2arc_info.
+				    l2arc_sublist_lock);
+				current_sublist = (current_sublist + 1) %
+				    num_sublists;
+				processed_sublists++;
+				continue;
+			}
+			/* Mark sublist as busy */
+			spa->spa_l2arc_info.l2arc_sublist_busy[pass]
+			    [current_sublist] = B_TRUE;
+			mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
+
 			mls = l2arc_sublist_lock(pass, current_sublist);
 			ASSERT3P(mls, !=, NULL);
 
@@ -9962,6 +9943,13 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 			}
 
 			multilist_sublist_unlock(mls);
+
+			/* Clear busy flag for this sublist */
+			mutex_enter(&spa->spa_l2arc_info.l2arc_sublist_lock);
+			spa->spa_l2arc_info.l2arc_sublist_busy[pass]
+			    [current_sublist] = B_FALSE;
+			mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
+
 			current_sublist = (current_sublist + 1) % num_sublists;
 			processed_sublists++;
 		}
@@ -9999,8 +9987,11 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 
 	/*
 	 * Update cumulative write tracking for marker reset logic.
+	 * Protected for multi-device thread access.
 	 */
+	mutex_enter(&spa->spa_l2arc_info.l2arc_sublist_lock);
 	spa->spa_l2arc_info.l2arc_total_writes += write_asize;
+	mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
 
 	/*
 	 * Update the device header after the zio completes as
@@ -10027,58 +10018,62 @@ l2arc_hdr_limit_reached(void)
 }
 
 /*
- * This thread feeds the L2ARC at regular intervals.  This is the beating
- * heart of the L2ARC.
+ * Per-device L2ARC feed thread.  Each L2ARC device has its own thread
+ * to allow parallel writes to multiple devices.
  */
 static  __attribute__((noreturn)) void
-l2arc_feed_thread(void *unused)
+l2arc_feed_thread(void *arg)
 {
-	(void) unused;
+	l2arc_dev_t *dev = arg;
 	callb_cpr_t cpr;
-	l2arc_dev_t *dev;
 	spa_t *spa;
 	uint64_t size, wrote;
 	clock_t begin, next = ddi_get_lbolt();
 	fstrans_cookie_t cookie;
 
-	CALLB_CPR_INIT(&cpr, &l2arc_feed_thr_lock, callb_generic_cpr, FTAG);
+	ASSERT3P(dev, !=, NULL);
 
-	mutex_enter(&l2arc_feed_thr_lock);
+	CALLB_CPR_INIT(&cpr, &dev->l2ad_feed_thr_lock, callb_generic_cpr, FTAG);
+
+	mutex_enter(&dev->l2ad_feed_thr_lock);
 
 	cookie = spl_fstrans_mark();
-	while (l2arc_thread_exit == 0) {
+	while (dev->l2ad_thread_exit == B_FALSE) {
 		CALLB_CPR_SAFE_BEGIN(&cpr);
-		(void) cv_timedwait_idle(&l2arc_feed_thr_cv,
-		    &l2arc_feed_thr_lock, next);
-		CALLB_CPR_SAFE_END(&cpr, &l2arc_feed_thr_lock);
+		(void) cv_timedwait_idle(&dev->l2ad_feed_cv,
+		    &dev->l2ad_feed_thr_lock, next);
+		CALLB_CPR_SAFE_END(&cpr, &dev->l2ad_feed_thr_lock);
 		next = ddi_get_lbolt() + hz;
 
 		/*
-		 * Quick check for L2ARC devices.
+		 * Check if thread should exit.
 		 */
-		mutex_enter(&l2arc_dev_mtx);
-		if (l2arc_ndev == 0) {
-			mutex_exit(&l2arc_dev_mtx);
-			continue;
-		}
-		mutex_exit(&l2arc_dev_mtx);
+		if (dev->l2ad_thread_exit)
+			break;
+
+		/*
+		 * Check if device is still valid.  If not, thread should exit.
+		 */
+		if (dev->l2ad_vdev == NULL || vdev_is_dead(dev->l2ad_vdev))
+			break;
 		begin = ddi_get_lbolt();
 
 		/*
-		 * This selects the next l2arc device to write to, and in
-		 * doing so the next spa to feed from: dev->l2ad_spa.   This
-		 * will return NULL if there are now no l2arc devices or if
-		 * they are all faulted.
-		 *
-		 * If a device is returned, its spa's config lock is also
-		 * held to prevent device removal.  l2arc_dev_get_next()
-		 * will grab and release l2arc_dev_mtx.
+		 * Try to acquire the spa config lock. If we can't get it,
+		 * skip this iteration as removal might be in progress.
+		 * The feed thread will exit naturally when it wakes up and
+		 * sees l2ad_thread_exit is set.
 		 */
-		if ((dev = l2arc_dev_get_next()) == NULL)
-			continue;
-
 		spa = dev->l2ad_spa;
 		ASSERT3P(spa, !=, NULL);
+		if (!spa_config_tryenter(spa, SCL_L2ARC, dev, RW_READER)) {
+			/*
+			 * Couldn't get config lock - skip this iteration.
+			 * If a removal is in progress, the thread will see
+			 * l2ad_thread_exit on the next iteration.
+			 */
+			continue;
+		}
 
 		/*
 		 * If the pool is read-only then force the feed thread to
@@ -10121,9 +10116,9 @@ l2arc_feed_thread(void *unused)
 	}
 	spl_fstrans_unmark(cookie);
 
-	l2arc_thread_exit = 0;
-	cv_broadcast(&l2arc_feed_thr_cv);
-	CALLB_CPR_EXIT(&cpr);		/* drops l2arc_feed_thr_lock */
+	dev->l2ad_feed_thread = NULL;
+	cv_broadcast(&dev->l2ad_feed_cv);
+	CALLB_CPR_EXIT(&cpr);		/* drops dev->l2ad_feed_thr_lock */
 	thread_exit();
 }
 
@@ -10311,6 +10306,14 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 	 */
 	adddev->l2ad_init_time = gethrtime();
 	adddev->l2ad_total_writes = 0;
+
+	/*
+	 * Initialize per-device thread fields
+	 */
+	adddev->l2ad_thread_exit = B_FALSE;
+	mutex_init(&adddev->l2ad_feed_thr_lock, NULL, MUTEX_DEFAULT, NULL);
+	cv_init(&adddev->l2ad_feed_cv, NULL, CV_DEFAULT, NULL);
+
 	zfs_refcount_create(&adddev->l2ad_lb_asize);
 	zfs_refcount_create(&adddev->l2ad_lb_count);
 
@@ -10341,6 +10344,17 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 	spa->spa_l2arc_info.l2arc_total_capacity += (adddev->l2ad_end -
 	    adddev->l2ad_start);
 	l2arc_update_smallest_capacity(spa);
+
+	/*
+	 * Create per-device feed thread.  The thread name includes
+	 * the spa name and device number for easy identification.
+	 */
+	char thread_name[MAXNAMELEN];
+	snprintf(thread_name, sizeof (thread_name), "l2arc_%s_%llu",
+	    spa_name(spa), (u_longlong_t)vd->vdev_id);
+	adddev->l2ad_feed_thread = thread_create_named(thread_name, NULL, 0,
+	    l2arc_feed_thread, adddev, 0, &p0, TS_RUN, minclsyspri);
+
 	mutex_exit(&l2arc_dev_mtx);
 }
 
@@ -10397,6 +10411,8 @@ l2arc_device_teardown(void *arg)
 	ASSERT(list_is_empty(&remdev->l2ad_lbptr_list));
 	list_destroy(&remdev->l2ad_lbptr_list);
 	mutex_destroy(&remdev->l2ad_mtx);
+	mutex_destroy(&remdev->l2ad_feed_thr_lock);
+	cv_destroy(&remdev->l2ad_feed_cv);
 	zfs_refcount_destroy(&remdev->l2ad_alloc);
 	zfs_refcount_destroy(&remdev->l2ad_lb_asize);
 	zfs_refcount_destroy(&remdev->l2ad_lb_count);
@@ -10451,6 +10467,19 @@ l2arc_remove_vdev(vdev_t *vd)
 			cv_wait(&l2arc_rebuild_thr_cv, &l2arc_rebuild_thr_lock);
 	}
 	mutex_exit(&l2arc_rebuild_thr_lock);
+
+	/*
+	 * Signal per-device feed thread to exit and wait for it.
+	 * This must be done before removing from the global list
+	 * to ensure the thread doesn't access freed memory.
+	 */
+	mutex_enter(&remdev->l2ad_feed_thr_lock);
+	remdev->l2ad_thread_exit = B_TRUE;
+	cv_signal(&remdev->l2ad_feed_cv);
+	while (remdev->l2ad_feed_thread != NULL)
+		cv_wait(&remdev->l2ad_feed_cv, &remdev->l2ad_feed_thr_lock);
+	mutex_exit(&remdev->l2ad_feed_thr_lock);
+
 	rva->rva_async = asynchronous;
 
 	/*
@@ -10459,7 +10488,6 @@ l2arc_remove_vdev(vdev_t *vd)
 	ASSERT(spa_config_held(spa, SCL_L2ARC, RW_WRITER) & SCL_L2ARC);
 	mutex_enter(&l2arc_dev_mtx);
 	list_remove(l2arc_dev_list, remdev);
-	l2arc_dev_last = NULL;		/* may have been invalidated */
 	atomic_dec_64(&l2arc_ndev);
 	spa->spa_l2arc_info.l2arc_total_capacity -=
 	    (remdev->l2ad_end - remdev->l2ad_start);
@@ -10494,11 +10522,8 @@ l2arc_remove_vdev(vdev_t *vd)
 void
 l2arc_init(void)
 {
-	l2arc_thread_exit = 0;
 	l2arc_ndev = 0;
 
-	mutex_init(&l2arc_feed_thr_lock, NULL, MUTEX_DEFAULT, NULL);
-	cv_init(&l2arc_feed_thr_cv, NULL, CV_DEFAULT, NULL);
 	mutex_init(&l2arc_rebuild_thr_lock, NULL, MUTEX_DEFAULT, NULL);
 	cv_init(&l2arc_rebuild_thr_cv, NULL, CV_DEFAULT, NULL);
 	mutex_init(&l2arc_dev_mtx, NULL, MUTEX_DEFAULT, NULL);
@@ -10515,8 +10540,6 @@ l2arc_init(void)
 void
 l2arc_fini(void)
 {
-	mutex_destroy(&l2arc_feed_thr_lock);
-	cv_destroy(&l2arc_feed_thr_cv);
 	mutex_destroy(&l2arc_rebuild_thr_lock);
 	cv_destroy(&l2arc_rebuild_thr_cv);
 	mutex_destroy(&l2arc_dev_mtx);
@@ -10529,25 +10552,21 @@ l2arc_fini(void)
 void
 l2arc_start(void)
 {
-	if (!(spa_mode_global & SPA_MODE_WRITE))
-		return;
-
-	(void) thread_create(NULL, 0, l2arc_feed_thread, NULL, 0, &p0,
-	    TS_RUN, defclsyspri);
+	/*
+	 * Per-device L2ARC feed threads are now created in l2arc_add_vdev(),
+	 * so this function is no longer needed for thread creation.
+	 * Kept for compatibility but does nothing.
+	 */
 }
 
 void
 l2arc_stop(void)
 {
-	if (!(spa_mode_global & SPA_MODE_WRITE))
-		return;
-
-	mutex_enter(&l2arc_feed_thr_lock);
-	cv_signal(&l2arc_feed_thr_cv);	/* kick thread out of startup */
-	l2arc_thread_exit = 1;
-	while (l2arc_thread_exit != 0)
-		cv_wait(&l2arc_feed_thr_cv, &l2arc_feed_thr_lock);
-	mutex_exit(&l2arc_feed_thr_lock);
+	/*
+	 * Per-device L2ARC feed threads are now stopped in l2arc_remove_vdev(),
+	 * so this function is no longer needed for thread termination.
+	 * Kept for compatibility but does nothing.
+	 */
 }
 
 /*
