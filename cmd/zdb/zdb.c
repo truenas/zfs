@@ -619,8 +619,9 @@ livelist_metaslab_validate(spa_t *spa)
 			    metaslab_calculate_range_tree_type(vd, m,
 			    &start, &shift);
 			metaslab_verify_t mv;
-			mv.mv_allocated = zfs_range_tree_create(NULL,
-			    type, NULL, start, shift);
+			mv.mv_allocated = zfs_range_tree_create_flags(
+			    NULL, type, NULL, start, shift,
+			    0, "livelist_metaslab_validate:mv_allocated");
 			mv.mv_vdid = vd->vdev_id;
 			mv.mv_msid = m->ms_id;
 			mv.mv_start = m->ms_start;
@@ -6322,8 +6323,9 @@ zdb_claim_removing(spa_t *spa, zdb_cb_t *zcb)
 
 	ASSERT0(zfs_range_tree_space(svr->svr_allocd_segs));
 
-	zfs_range_tree_t *allocs = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64,
-	    NULL, 0, 0);
+	zfs_range_tree_t *allocs = zfs_range_tree_create_flags(
+	    NULL, ZFS_RANGE_SEG64, NULL, 0, 0,
+	    0, "zdb_claim_removing:allocs");
 	for (uint64_t msi = 0; msi < vd->vdev_ms_count; msi++) {
 		metaslab_t *msp = vd->vdev_ms[msi];
 
@@ -7706,7 +7708,8 @@ zdb_set_skip_mmp(char *target)
  * applies to the new_path parameter if allocated.
  */
 static char *
-import_checkpointed_state(char *target, nvlist_t *cfg, char **new_path)
+import_checkpointed_state(char *target, nvlist_t *cfg, boolean_t target_is_spa,
+    char **new_path)
 {
 	int error = 0;
 	char *poolname, *bogus_name = NULL;
@@ -7714,11 +7717,11 @@ import_checkpointed_state(char *target, nvlist_t *cfg, char **new_path)
 
 	/* If the target is not a pool, the extract the pool name */
 	char *path_start = strchr(target, '/');
-	if (path_start != NULL) {
+	if (target_is_spa || path_start == NULL) {
+		poolname = target;
+	} else {
 		size_t poolname_len = path_start - target;
 		poolname = strndup(target, poolname_len);
-	} else {
-		poolname = target;
 	}
 
 	if (cfg == NULL) {
@@ -7749,10 +7752,11 @@ import_checkpointed_state(char *target, nvlist_t *cfg, char **new_path)
 		    "with error %d\n", bogus_name, error);
 	}
 
-	if (new_path != NULL && path_start != NULL) {
-		if (asprintf(new_path, "%s%s", bogus_name, path_start) == -1) {
+	if (new_path != NULL && !target_is_spa) {
+		if (asprintf(new_path, "%s%s", bogus_name,
+		    path_start != NULL ? path_start : "") == -1) {
 			free(bogus_name);
-			if (path_start != NULL)
+			if (!target_is_spa && path_start != NULL)
 				free(poolname);
 			return (NULL);
 		}
@@ -7981,7 +7985,7 @@ verify_checkpoint_blocks(spa_t *spa)
 	 * name) so we can do verification on it against the current state
 	 * of the pool.
 	 */
-	checkpoint_pool = import_checkpointed_state(spa->spa_name, NULL,
+	checkpoint_pool = import_checkpointed_state(spa->spa_name, NULL, B_TRUE,
 	    NULL);
 	ASSERT(strcmp(spa->spa_name, checkpoint_pool) != 0);
 
@@ -8451,8 +8455,9 @@ dump_zpool(spa_t *spa)
 
 	if (dump_opt['d'] || dump_opt['i']) {
 		spa_feature_t f;
-		mos_refd_objs = zfs_range_tree_create(NULL, ZFS_RANGE_SEG64,
-		    NULL, 0, 0);
+		mos_refd_objs = zfs_range_tree_create_flags(
+		    NULL, ZFS_RANGE_SEG64, NULL, 0, 0,
+		    0, "dump_zpool:mos_refd_objs");
 		dump_objset(dp->dp_meta_objset);
 
 		if (dump_opt['d'] >= 3) {
@@ -9120,7 +9125,7 @@ zdb_read_block(char *thing, spa_t *spa)
 				ck_zio->io_offset =
 				    DVA_GET_OFFSET(&bp->blk_dva[0]);
 				ck_zio->io_bp = bp;
-				zio_checksum_compute(ck_zio, ck, pabd, lsize);
+				zio_checksum_compute(ck_zio, ck, pabd, psize);
 				printf(
 				    "%12s\t"
 				    "cksum=%016llx:%016llx:%016llx:%016llx\n",
@@ -9697,7 +9702,7 @@ main(int argc, char **argv)
 	char *checkpoint_target = NULL;
 	if (dump_opt['k']) {
 		checkpoint_pool = import_checkpointed_state(target, cfg,
-		    &checkpoint_target);
+		    target_is_spa, &checkpoint_target);
 
 		if (checkpoint_target != NULL)
 			target = checkpoint_target;

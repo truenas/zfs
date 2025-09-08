@@ -1440,6 +1440,9 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/crtime/setup.ksh \
 	functional/crypto/icp_aes_ccm.ksh \
 	functional/crypto/icp_aes_gcm.ksh \
+	functional/ctime/cleanup.ksh \
+	functional/ctime/ctime_001_pos.ksh \
+	functional/ctime/setup.ksh \
 	functional/deadman/deadman_ratelimit.ksh \
 	functional/deadman/deadman_sync.ksh \
 	functional/deadman/deadman_zio.ksh \
@@ -1658,6 +1661,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/mmap/mmap_seek_001_pos.ksh \
 	functional/mmap/mmap_sync_001_pos.ksh \
 	functional/mmap/mmap_write_001_pos.ksh \
+	functional/mmap/mmap_ftruncate.ksh \
 	functional/mmap/setup.ksh \
 	functional/mmp/cleanup.ksh \
 	functional/mmp/mmp_active_import.ksh \
