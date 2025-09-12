@@ -27,6 +27,7 @@
  */
 #ifndef _LIBSPL_LIBSHARE_IMPL_H
 #define	_LIBSPL_LIBSHARE_IMPL_H
+#include <sys/stdtypes.h>      /* boolean_t */
 
 typedef const struct sa_share_impl {
 	const char *sa_zfsname;

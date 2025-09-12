@@ -407,6 +407,6 @@ smb_available(void)
 	return (avail == 1);
 #else
 	/* TrueNAS: Disable SMB sharing */
-	return 0
+	return (B_FALSE);
 #endif
 }
