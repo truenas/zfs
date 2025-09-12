@@ -87,6 +87,7 @@ static void
 nfs_truncate_shares(void)
 {
 	/* Not implemented */
+	return;
 }
 
 const sa_fstype_t libshare_nfs_type = {
