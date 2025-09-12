@@ -46,6 +46,72 @@
  * The first command will create a user share that gives everyone full access.
  * To limit the access below that, use normal UNIX commands (chmod, chown etc).
  */
+#ifndef TRUENAS_ENABLE_ZFS_SHARING
+/* TrueNAS: Disable SMB sharing via ZFS */
+
+#include <stdio.h>
+#include <libshare.h>
+#include "libshare_impl.h"
+
+/*
+ * Enables SMB sharing for the specified share.
+ */
+static int
+smb_enable_share(sa_share_impl_t impl_share)
+{
+	(void) impl_share;
+	fputs("TrueNAS does not support SMB sharing via ZFS.\n", stderr);
+	return (SA_NOT_SUPPORTED);
+}
+/*
+ * Disables SMB sharing for the specified share.
+ */
+static int
+smb_disable_share(sa_share_impl_t impl_share)
+{
+	(void) impl_share;
+	fputs("TrueNAS does not support SMB sharing via ZFS.\n", stderr);
+	return (SA_NOT_SUPPORTED);
+}
+
+/*
+ * Checks whether the specified SMB share options are syntactically correct.
+ */
+static int
+smb_validate_shareopts(const char *shareopts)
+{
+	(void) shareopts;
+	fputs("TrueNAS does not support SMB sharing via ZFS.\n", stderr);
+	return (SA_NOT_SUPPORTED);
+}
+
+/*
+ * Checks whether a share is currently active.
+ */
+static boolean_t
+smb_is_share_active(sa_share_impl_t impl_share)
+{
+	(void) impl_share;
+	return (B_FALSE);
+}
+
+static int
+smb_update_shares(void)
+{
+	/* Not implemented */
+	return (0);
+}
+
+const sa_fstype_t libshare_smb_type = {
+	.enable_share = smb_enable_share,
+	.disable_share = smb_disable_share,
+	.is_shared = smb_is_share_active,
+
+	.validate_shareopts = smb_validate_shareopts,
+	.commit_shares = smb_update_shares,
+};
+
+#else	/* TRUENAS_ENABLE_ZFS_SHARING */
 
 #include <time.h>
 #include <stdlib.h>
@@ -405,3 +471,4 @@ smb_available(void)
 
 	return (avail == 1);
 }
+#endif	/* TRUENAS_ENABLE_ZFS_SHARING */

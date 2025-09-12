@@ -26,6 +26,81 @@
  * Copyright (c) 2012 Cyril Plisko. All rights reserved.
  * Copyright (c) 2019, 2022 by Delphix. All rights reserved.
  */
+#ifndef TRUENAS_ENABLE_ZFS_SHARING
+/* TrueNAS: Disable NFS sharing via ZFS */
+
+#include <stdio.h>
+#include <libshare.h>
+#include "libshare_impl.h"
+
+/*
+ * Enables NFS sharing for the specified share.
+ */
+static int
+nfs_enable_share(sa_share_impl_t impl_share)
+{
+	(void) impl_share;
+	fputs("TrueNAS does not support NFS sharing via ZFS.\n", stderr);
+	return (SA_NOT_SUPPORTED);
+}
+
+/*
+ * Disables NFS sharing for the specified share.
+ */
+static int
+nfs_disable_share(sa_share_impl_t impl_share)
+{
+	(void) impl_share;
+	fputs("TrueNAS does not support NFS sharing via ZFS.\n", stderr);
+	return (SA_NOT_SUPPORTED);
+}
+
+/*
+ * Checks whether the specified NFS share options are syntactically correct.
+ */
+static int
+nfs_validate_shareopts(const char *shareopts)
+{
+	(void) shareopts;
+	fputs("TrueNAS does not support NFS sharing via ZFS.\n", stderr);
+	return (SA_NOT_SUPPORTED);
+}
+
+/*
+ * Checks whether a share is currently active.
+ */
+static boolean_t
+nfs_is_shared(sa_share_impl_t impl_share)
+{
+	(void) impl_share;
+	return (B_FALSE);
+}
+
+static int
+nfs_commit_shares(void)
+{
+	/* Not implemented */
+	return (0);
+}
+
+static void
+nfs_truncate_shares(void)
+{
+	/* Not implemented */
+	return;
+}
+
+const sa_fstype_t libshare_nfs_type = {
+	.enable_share = nfs_enable_share,
+	.disable_share = nfs_disable_share,
+	.is_shared = nfs_is_shared,
+
+	.validate_shareopts = nfs_validate_shareopts,
+	.commit_shares = nfs_commit_shares,
+	.truncate_shares = nfs_truncate_shares,
+};
+
+#else	/* TRUENAS_ENABLE_ZFS_SHARING */
 
 #include <dirent.h>
 #include <stdio.h>
@@ -585,3 +660,4 @@ exports_available(void)
 
 	return (avail == 1);
 }
+#endif	/* TRUENAS_ENABLE_ZFS_SHARING */
