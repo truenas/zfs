@@ -49,6 +49,8 @@
 #		- Alternate Root Specified
 #	4. Verify the mount & share status is restored.
 #
+# TrueNAS: Commented out sharenfs tests
+truenas_sharenfs="skip"
 
 verify_runnable "global"
 
@@ -73,8 +75,8 @@ function cleanup
 		fi
 
 		if poolexists ${pools[i]}; then
-			is_shared ${pools[i]} && \
-			    log_must zfs set sharenfs=off ${pools[i]}
+			# is_shared ${pools[i]} && \
+			#     log_must zfs set sharenfs=off ${pools[i]}
 
 			ismounted "${pools[i]}/$TESTFS" || \
 			    log_must zfs mount ${pools[i]}/$TESTFS
@@ -97,7 +99,8 @@ function cleanup
 
 log_onexit cleanup
 
-log_assert "Verify all mount & share status of sub-filesystems within a pool \
+# log_assert "Verify all mount & share status of sub-filesystems within a pool
+log_assert "Verify all mount status of sub-filesystems within a pool \
 	can be restored after import [-Df]."
 
 setup_filesystem "$DEVICE_FILES" $TESTPOOL1 $TESTFS $TESTDIR1
@@ -120,7 +123,7 @@ typeset nomount_fs="$TESTFS/$TESTCTR $TESTFS/$TESTCTR/$TESTCTR1"
 
 typeset -i i=0
 typeset -i j=0
-typeset -i nfs_share_bit=0
+# typeset -i nfs_share_bit=0
 typeset -i guid_bit=0
 typeset basedir
 
@@ -131,6 +134,7 @@ for option in "" "-Df"; do
 		guid=$(get_pool_prop guid $pool)
 		j=0
 		while ((j < ${#options[*]})); do
+			if [[ "$truenas_sharenfs" != "skip"]]; then	# TrueNAS: skip sharenfs tests
 			# set sharenfs property off/on
 			nfs_share_bit=0
 			while ((nfs_share_bit <= 1)); do
@@ -199,6 +203,7 @@ for option in "" "-Df"; do
 				fi
 				((nfs_share_bit = nfs_share_bit + 1))
 			done
+			fi	# End TrueNAS sharenfs skip
 
 			((j = j + 1))
 		done
@@ -207,5 +212,6 @@ for option in "" "-Df"; do
 	done
 done
 
-log_pass "All mount & share status of sub-filesystems within a pool \
+# log_pass "All mount & share status of sub-filesystems within a pool
+log_pass "All mount status of sub-filesystems within a pool \
 	can be restored after import [-Df]."

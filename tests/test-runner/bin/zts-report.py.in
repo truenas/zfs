@@ -141,6 +141,11 @@ else:
     cfr_cross_reason = 'copy_file_range(2) cross-filesystem needs kernel 5.3+'
 
 #
+# TrueNAS modifications
+#
+truenas_disabled = "Not supported by TrueNAS"
+
+#
 # These tests are known to fail, thus we use this list to prevent these
 # failures from failing the job as a whole; only unexpected failures
 # bubble up to cause this script to exit with a non-zero exit status.
@@ -164,6 +169,19 @@ known = {
     'rootpool/setup': ['SKIP', na_reason],
     'rsend/rsend_008_pos': ['SKIP', 6066],
     'vdev_zaps/vdev_zaps_007_pos': ['FAIL', known_reason],
+    'zfs_share/zfs_share_001_pos': ['SKIP', truenas_disabled],
+    'zfs_share/zfs_share_004_pos': ['SKIP', truenas_disabled],
+    'zfs_share/zfs_share_005_pos': ['SKIP', truenas_disabled],
+    'zfs_share/zfs_share_006_pos': ['SKIP', truenas_disabled],
+    'zfs_share/zfs_share_009_neg': ['SKIP', truenas_disabled],
+    'zfs_share/zfs_share_011_pos': ['SKIP', truenas_disabled],
+    'zfs_share/zfs_share_012_pos': ['SKIP', truenas_disabled],
+    'zfs_share/zfs_share_013_pos': ['SKIP', truenas_disabled],
+    'zfs_share/zfs_share_after_mount': ['SKIP', truenas_disabled],
+    'zfs_unshare/zfs_unshare_001_pos': ['SKIP', truenas_disabled],
+    'zfs_unshare/zfs_unshare_004_neg': ['SKIP', truenas_disabled],
+    'zfs_unshare/zfs_unshare_007_pos': ['SKIP', truenas_disabled],
+    'zfs_unshare/zfs_unshare_008_pos': ['SKIP', truenas_disabled],
 }
 
 if sys.platform.startswith('freebsd'):
