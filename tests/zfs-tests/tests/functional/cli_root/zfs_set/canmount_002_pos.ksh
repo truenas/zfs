@@ -47,7 +47,6 @@
 # 3. mount each dataset(except volume) to see if it can be mounted.
 # 4. verify that a mounted dataset can be shared by share -a.
 #
-# TrueNAS: Commented out sharenfs testing
 
 verify_runnable "both"
 
@@ -99,7 +98,7 @@ log_onexit cleanup
 
 set -A old_mnt
 set -A old_canmount
-# set -A old_sharenfs
+set -A old_sharenfs
 typeset tmpmnt=/tmpmount$$
 typeset ds
 
@@ -113,7 +112,7 @@ while (( i < ${#dataset_pos[*]} )); do
 	ds=${dataset_pos[i]}
 	old_mnt[i]=$(get_prop mountpoint $ds)
 	old_canmount[i]=$(get_prop canmount $ds)
-	# old_sharenfs[i]=$(get_prop sharenfs $ds)
+	old_sharenfs[i]=$(get_prop sharenfs $ds)
 	(( i = i + 1 ))
 done
 
@@ -130,8 +129,8 @@ while (( i < ${#dataset_pos[*]} )) ; do
 		log_must unmounted $dataset
 		log_must zfs mount -a
 		log_must unmounted $dataset
-		# log_must zfs share -a
-		# log_mustnot is_exported $tmpmnt
+		log_must zfs share -a
+		log_mustnot is_exported $tmpmnt
 	else
 		log_must zfs mount -a
 		log_must unmounted $dataset
@@ -141,10 +140,10 @@ while (( i < ${#dataset_pos[*]} )) ; do
 
 	log_must zfs mount $dataset
 	log_must mounted $dataset
-	# log_must zfs share -a
-	# log_must is_exported $tmpmnt
+	log_must zfs share -a
+	log_must is_exported $tmpmnt
 
-	# log_must zfs set sharenfs="${old_sharenfs[i]}" $dataset
+	log_must zfs set sharenfs="${old_sharenfs[i]}" $dataset
 	log_must zfs set canmount="${old_canmount[i]}" $dataset
 	log_must zfs set mountpoint="${old_mnt[i]}" $dataset
 	(( i = i + 1 ))

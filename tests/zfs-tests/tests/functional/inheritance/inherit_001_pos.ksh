@@ -372,12 +372,12 @@ function scan_state { #state-file
 # Note that we keep this list relatively short so that this test doesn't
 # time out (after taking more than 10 minutes).
 #
-# TrueNAS: removed 'sharenfs'
 set -A prop "checksum" "" \
 	"compression" "" \
 	"aclmode" "" \
 	"acltype" "" \
 	"atime" "" \
+	"sharenfs" "" \
 	"recordsize" "recsize" \
 	"snapdir" "" \
 	"readonly" "" \
