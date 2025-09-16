@@ -130,7 +130,7 @@ while (( i < ${#dataset_pos[*]} )) ; do
 		log_must zfs mount -a
 		log_must unmounted $dataset
 		log_must zfs share -a
-		log_mustnot is_exported $tmpmnt
+		# log_mustnot is_exported $tmpmnt	# TrueNAS: Disable share export
 	else
 		log_must zfs mount -a
 		log_must unmounted $dataset
@@ -141,7 +141,7 @@ while (( i < ${#dataset_pos[*]} )) ; do
 	log_must zfs mount $dataset
 	log_must mounted $dataset
 	log_must zfs share -a
-	log_must is_exported $tmpmnt
+	# log_must is_exported $tmpmnt	# TrueNAS: Disable share export
 
 	# log_must zfs set sharenfs="${old_sharenfs[i]}" $dataset	# TrueNAS: Disable sharenfs
 	log_must zfs set canmount="${old_canmount[i]}" $dataset

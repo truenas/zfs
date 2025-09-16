@@ -52,7 +52,7 @@
 
 verify_runnable "global"
 
-log_unsupported "SKIP: sharenfs is disabled on TrueNAS
+log_unsupported "SKIP: sharenfs is disabled on TrueNAS"
 
 set -A pools "$TESTPOOL" "$TESTPOOL1"
 set -A devs "" "-d $DEVICE_DIR"
