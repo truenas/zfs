@@ -203,8 +203,6 @@ for option in "" "-Df"; do
 				fi
 				((nfs_share_bit = nfs_share_bit + 1))
 			done
-			else
-			log_note "TRUENAS: Skip sharenfs testing"
 			fi	# End TrueNAS sharenfs skip
 
 			((j = j + 1))
