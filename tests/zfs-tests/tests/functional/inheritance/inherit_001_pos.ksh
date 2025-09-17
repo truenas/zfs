@@ -341,26 +341,42 @@ function scan_state { #state-file
 
 					for p in ${prop[i]} ${prop[((i+1))]}; do
 						zfs $op $p $target
-						check_failure $? "zfs $op $p $target"
+						# --- MCG DEBUG ---
+						rc=$?
+						log_note "Check 'zfs $op $p $target', rc=$rc"
+						check_failure $rc "zfs $op $p $target"
+						# check_failure $? "zfs $op $p $target"   <-------------- RESTORE ORIG
+
 					done
 				fi
 				for check_obj in $list; do
 					read init_src final_src
 
 					for p in ${prop[i]} ${prop[((i+1))]}; do
+						# --- MCG DEBUG ---
+						log_note "Call 'verify_prop_src $check_obj $p $final_src'"
 					# check_failure to keep journal small
 						verify_prop_src $check_obj $p \
 						    $final_src
-						check_failure $? "verify" \
-						    "_prop_src $check_obj $p" \
-						    "$final_src"
+						rc=$?
+						log_note "verify_prop_src rc=$rc"
+						log_note "Call 'check_failure $rc verify_prop_src $check_obj $p $final_src'"
+						check_failure $rc "verify_prop_src $check_obj $p $final_src"
+						# check_failure $? "verify" \
+						    # "_prop_src $check_obj $p" \
+						    # "$final_src"
 
 					# Again, to keep journal size down.
+						log_note "Call 'verify_prop_val $p $check_obj $final_src $j'"
 						verify_prop_val $p $check_obj \
 						    $final_src $j
-						check_failure $? "verify" \
-						    "_prop_val $check_obj $p" \
-						    "$final_src"
+						rc=$?
+						log_note "verify_prop_val rc=$rc"
+						log_note "Call 'check_failure $rc verify_prop_val $check_obj $p $final_src'"
+						check_failure $rc "verify_prop_val $check_obj $p $final_src"
+						# check_failure $? "verify" \
+						#     "_prop_val $check_obj $p" \
+						#     "$final_src"
 					done
 				done
 			done
