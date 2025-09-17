@@ -253,7 +253,7 @@ function verify_prop_val #property dataset src index
 		# 'restricted' instead of 'secure',
 		# but the old interface of 'secure' still exist
 
-		if [[ $prop != "aclinherit" || \
+		if [[ $prop not in ["aclinherit", "sharenfs"] || \
 		    $exp_val != "secure" || \
 		    $prop_val != "restricted" ]]; then
 
