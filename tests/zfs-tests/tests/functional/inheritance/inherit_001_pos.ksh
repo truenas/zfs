@@ -253,9 +253,7 @@ function verify_prop_val #property dataset src index
 		# 'restricted' instead of 'secure',
 		# but the old interface of 'secure' still exist
 
-		# TrueNAS excludes sharenfs
 		if [[ $prop != "aclinherit" || \
-		    $prop != "sharenfs" || \
 		    $exp_val != "secure" || \
 		    $prop_val != "restricted" ]]; then
 
