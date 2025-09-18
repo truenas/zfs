@@ -390,13 +390,13 @@ set -A prop "checksum" "" \
 # the routine itself), each property specified in the 'prop' array
 # above must have a corresponding entry in the two arrays below.
 #
-
+# TrueNAS: removed sharenfs setting
 set -A def_val  "on" \
 	"on" \
 	"discard" \
 	"nfsv4" \
 	"on" \
-	"off" "" \
+	"recsize:unused" \
 	"hidden" \
 	"off" \
 	"all"
@@ -406,7 +406,7 @@ set -A local_val  "off" \
 	"groupmask" \
 	"off" \
 	"off" \
-	"on" "" \
+	"recsize:unused" \
 	"visible" \
 	"off" \
 	"none"
