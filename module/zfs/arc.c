@@ -816,6 +816,7 @@ typedef struct arc_async_flush {
 
 #define	L2ARC_WRITE_SIZE	(32 * 1024 * 1024)	/* initial write max */
 #define	L2ARC_MIN_WRITE_SIZE	(1 * 1024 * 1024)	/* minimal write rate */
+#define	L2ARC_BURST_SIZE_MAX	(50 * 1024 * 1024)	/* max burst size */
 #define	L2ARC_HEADROOM		8			/* num of writes */
 
 /*
@@ -918,6 +919,7 @@ static inline void arc_hdr_clear_flags(arc_buf_hdr_t *hdr, arc_flags_t flags);
 static boolean_t l2arc_write_eligible(uint64_t, arc_buf_hdr_t *);
 static void l2arc_read_done(zio_t *);
 static void l2arc_do_free_on_write(l2arc_dev_t *dev);
+static uint64_t l2arc_get_write_rate(l2arc_dev_t *dev);
 static void l2arc_hdr_arcstats_update(arc_buf_hdr_t *hdr, boolean_t incr,
     boolean_t state_only);
 
@@ -8371,7 +8373,6 @@ arc_fini(void)
  *
  *	l2arc_write_eligible()	check if a buffer is eligible to cache
  *	l2arc_write_size()	calculate how much to write
- *	l2arc_write_interval()	calculate sleep delay between writes
  *
  * These three functions determine what to write, how much, and how quickly
  * to send writes.
@@ -8492,9 +8493,10 @@ l2arc_write_eligible(uint64_t spa_guid, arc_buf_hdr_t *hdr)
 }
 
 static uint64_t
-l2arc_write_size(l2arc_dev_t *dev)
+l2arc_write_size(l2arc_dev_t *dev, clock_t *interval)
 {
 	uint64_t size;
+	uint64_t write_rate;
 
 	/*
 	 * Make sure our globals have meaningful values in case the user
@@ -8506,10 +8508,17 @@ l2arc_write_size(l2arc_dev_t *dev)
 		l2arc_write_max = L2ARC_WRITE_SIZE;
 	}
 
-	/*
-	 * DWPD disabled for now - use l2arc_write_max
-	 */
-	size = l2arc_write_max;
+	write_rate = l2arc_get_write_rate(dev);
+
+	if (write_rate > L2ARC_BURST_SIZE_MAX) {
+		/* Calculate interval to achieve desired rate with burst cap */
+		uint64_t feeds_per_sec = write_rate / L2ARC_BURST_SIZE_MAX;
+		*interval = hz / feeds_per_sec;
+		size = L2ARC_BURST_SIZE_MAX;
+	} else {
+		*interval = hz; /* 1 second default */
+		size = write_rate;
+	}
 
 	/* We need to add in the worst case scenario of log block overhead. */
 	size += l2arc_log_blk_overhead(size, dev);
@@ -8533,28 +8542,6 @@ l2arc_write_size(l2arc_dev_t *dev)
 
 	return (size);
 
-}
-
-static clock_t
-l2arc_write_interval(clock_t began, uint64_t wanted, uint64_t wrote)
-{
-	clock_t interval, next, now;
-
-	/*
-	 * If the ARC lists are busy, increase our write rate; if the
-	 * lists are stale, idle back.  This is achieved by checking
-	 * how much we previously wrote - if it was more than half of
-	 * what we wanted, schedule the next write much sooner.
-	 */
-	if (l2arc_feed_again && wrote > (wanted / 2))
-		interval = (hz * l2arc_feed_min_ms) / 1000;
-	else
-		interval = hz * l2arc_feed_secs;
-
-	now = ddi_get_lbolt();
-	next = MAX(now, MIN(now + interval, began + interval));
-
-	return (next);
 }
 
 /*
@@ -9179,6 +9166,53 @@ l2arc_log_blk_overhead(uint64_t write_sz, l2arc_dev_t *dev)
 		return (vdev_psize_to_asize(dev->l2ad_vdev,
 		    sizeof (l2arc_log_blk_phys_t)) * log_blocks);
 	}
+}
+
+/*
+ * Calculate DWPD rate limit for L2ARC device.
+ */
+static uint64_t
+l2arc_dwpd_rate_limit(l2arc_dev_t *dev)
+{
+	uint64_t device_size = dev->l2ad_end - dev->l2ad_start;
+	uint64_t daily_budget = device_size * l2arc_dwpd_limit;
+	hrtime_t now = gethrtime();
+
+	/* Reset every 24 hours */
+	if ((now - dev->l2ad_dwpd_start) >=
+	    (hrtime_t)24 * 3600 * NANOSEC) {
+		/* Save unused budget from previous period (max 1 day) */
+		dev->l2ad_dwpd_accumulated = MIN(daily_budget,
+		    daily_budget - dev->l2ad_dwpd_writes);
+		dev->l2ad_dwpd_writes = 0;
+		dev->l2ad_dwpd_start = now;
+	}
+
+	uint64_t elapsed = (now - dev->l2ad_dwpd_start) / NANOSEC;
+	uint64_t dwpd_budget = daily_budget / (24 * 3600);
+	uint64_t expected_writes = elapsed * dwpd_budget;
+
+	uint64_t available_budget = dwpd_budget + dev->l2ad_dwpd_accumulated;
+	if (expected_writes > dev->l2ad_dwpd_writes) {
+		/* Add unused budget from current period */
+		available_budget += expected_writes - dev->l2ad_dwpd_writes;
+	}
+
+	return (available_budget);
+}
+
+/*
+ * Get write rate based on device state and DWPD configuration.
+ */
+static uint64_t
+l2arc_get_write_rate(l2arc_dev_t *dev)
+{
+	/* Apply DWPD rate limit after device filled once */
+	if (!dev->l2ad_first && l2arc_dwpd_limit > 0 &&
+	    dev->l2ad_vdev->vdev_ops != &vdev_file_ops)
+		return (MIN(l2arc_dwpd_rate_limit(dev), l2arc_write_max));
+
+	return (l2arc_write_max);
 }
 
 /*
@@ -9999,6 +10033,11 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	spa->spa_l2arc_info.l2arc_total_writes += write_asize;
 	mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
 
+	/* Track writes for DWPD when device is recycling (not file vdevs) */
+	if (!dev->l2ad_first && l2arc_dwpd_limit > 0 &&
+	    dev->l2ad_vdev->vdev_ops != &vdev_file_ops)
+		dev->l2ad_dwpd_writes += write_asize;
+
 	/*
 	 * Update the device header after the zio completes as
 	 * l2arc_write_done() may have updated the memory holding the log block
@@ -10097,7 +10136,17 @@ l2arc_feed_thread(void *arg)
 
 		ARCSTAT_BUMP(arcstat_l2_feeds);
 
-		size = l2arc_write_size(dev);
+		/*
+		 * Check if using adaptive intervals (devices with persistent
+		 * markers). File vdevs use legacy approach regardless of size.
+		 */
+		uint64_t threshold = MIN((arc_c_max / 4), arc_c);
+		boolean_t use_adaptive_interval =
+		    (spa->spa_l2arc_info.l2arc_total_capacity >= threshold) &&
+		    (dev->l2ad_vdev->vdev_ops != &vdev_file_ops);
+
+		clock_t interval;
+		size = l2arc_write_size(dev, &interval);
 
 		/*
 		 * Evict L2ARC buffers that will be overwritten.
@@ -10110,9 +10159,20 @@ l2arc_feed_thread(void *arg)
 		wrote = l2arc_write_buffers(spa, dev, size);
 
 		/*
-		 * Calculate interval between writes.
+		 * If smaller device, use legacy approach based on data written
 		 */
-		next = l2arc_write_interval(begin, size, wrote);
+		if (!use_adaptive_interval) {
+			if (l2arc_feed_again && wrote > (size / 2))
+				interval = (hz * l2arc_feed_min_ms) / 1000;
+			else
+				interval = hz * l2arc_feed_secs;
+		}
+
+		/*
+		 * Calculate next feed time.
+		 */
+		clock_t now = ddi_get_lbolt();
+		next = MAX(now, MIN(now + interval, begin + interval));
 		spa_config_exit(spa, SCL_L2ARC, dev);
 	}
 	spl_fstrans_unmark(cookie);
@@ -10281,6 +10341,9 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 	adddev->l2ad_first = B_TRUE;
 	adddev->l2ad_writing = B_FALSE;
 	adddev->l2ad_trim_all = B_FALSE;
+	adddev->l2ad_dwpd_writes = 0;
+	adddev->l2ad_dwpd_start = gethrtime();
+	adddev->l2ad_dwpd_accumulated = 0;
 	list_link_init(&adddev->l2ad_node);
 	adddev->l2ad_dev_hdr = kmem_zalloc(l2dhdr_asize, KM_SLEEP);
 
