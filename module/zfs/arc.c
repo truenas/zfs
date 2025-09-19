@@ -1015,13 +1015,6 @@ static void l2arc_blk_fetch_done(zio_t *zio);
 static inline uint64_t
     l2arc_log_blk_overhead(uint64_t write_sz, l2arc_dev_t *dev);
 
-#if 0
-/*
- * TODO: Re-enable when DWPD calculation is finalized
- */
-static uint64_t l2arc_dwpd_rate_limit(l2arc_dev_t *dev);
-#endif
-
 /*
  * We use Cityhash for this. It's fast, and has good hash properties without
  * requiring any large static buffers.
@@ -9189,39 +9182,6 @@ l2arc_log_blk_overhead(uint64_t write_sz, l2arc_dev_t *dev)
 }
 
 /*
- * Calculate DWPD-based rate limit for L2ARC device.
- * Returns maximum bytes allowed based on DWPD budget.
- *
- * TODO: Re-enable when DWPD calculation is finalized based on workload.
- * Currently disabled as the calculation needs refinement.
- */
-#if 0
-static uint64_t
-l2arc_dwpd_rate_limit(l2arc_dev_t *dev)
-{
-	hrtime_t now = gethrtime();
-	hrtime_t elapsed_ns = now - dev->l2ad_init_time;
-	uint64_t elapsed_sec = elapsed_ns / NANOSEC;
-	uint64_t allowed_so_far;
-
-	if (l2arc_dwpd_limit == 0)		/* DWPD disabled */
-		return (l2arc_write_max);
-
-	if (elapsed_sec == 0)			/* No time elapsed yet */
-		return (L2ARC_MIN_WRITE_SIZE);
-
-	allowed_so_far = ((dev->l2ad_end - dev->l2ad_start) * l2arc_dwpd_limit *
-	    elapsed_sec) / (24 * 3600);
-
-	if (dev->l2ad_total_writes < allowed_so_far)
-		return (allowed_so_far - dev->l2ad_total_writes);
-
-	/* DWPD budget exhausted, allow minimal writes */
-	return (L2ARC_MIN_WRITE_SIZE);
-}
-#endif
-
-/*
  * Evict buffers from the device write hand to the distance specified in
  * bytes. This distance may span populated buffers, it may span nothing.
  * This is clearing a region on the L2ARC device ready for writing.
@@ -10046,11 +10006,6 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	 */
 	l2arc_dev_hdr_update(dev);
 
-	/*
-	 * Track total bytes written for DWPD calculation
-	 */
-	dev->l2ad_total_writes += write_asize;
-
 	return (write_asize);
 }
 
@@ -10346,12 +10301,6 @@ l2arc_add_vdev(spa_t *spa, vdev_t *vd)
 
 	vdev_space_update(vd, 0, 0, adddev->l2ad_end - adddev->l2ad_hand);
 	zfs_refcount_create(&adddev->l2ad_alloc);
-
-	/*
-	 * Initialize DWPD tracking fields
-	 */
-	adddev->l2ad_init_time = gethrtime();
-	adddev->l2ad_total_writes = 0;
 
 	/*
 	 * Initialize per-device thread fields

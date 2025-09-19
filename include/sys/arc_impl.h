@@ -437,11 +437,6 @@ typedef struct l2arc_dev {
 	zfs_refcount_t		l2ad_lb_count;
 	boolean_t		l2ad_trim_all; /* TRIM whole device */
 	/*
-	 * DWPD (Drive Writes Per Day) tracking for rate limiting
-	 */
-	hrtime_t		l2ad_init_time;		/* device init time */
-	uint64_t		l2ad_total_writes;	/* total L2ARC writes */
-	/*
 	 * Per-device feed thread for parallel L2ARC writes
 	 */
 	kthread_t		*l2ad_feed_thread;	/* feed thread handle */
