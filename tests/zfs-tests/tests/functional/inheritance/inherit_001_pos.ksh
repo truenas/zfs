@@ -372,7 +372,7 @@ function scan_state { #state-file
 # Note that we keep this list relatively short so that this test doesn't
 # time out (after taking more than 10 minutes).
 #
-# TrueNAS: removed sharenfs property
+# TrueNAS: remove testing of sharenfs property
 set -A prop "checksum" "" \
 	"compression" "" \
 	"aclmode" "" \
@@ -388,7 +388,7 @@ set -A prop "checksum" "" \
 # the routine itself), each property specified in the 'prop' array
 # above must have a corresponding entry in the two arrays below.
 #
-# TrueNAS: removed sharenfs setting
+# TrueNAS: remove testing of sharenfs setting
 set -A def_val  "on" \
 	"on" \
 	"discard" \
