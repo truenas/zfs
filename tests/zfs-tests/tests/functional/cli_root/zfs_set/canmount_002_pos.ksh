@@ -140,7 +140,7 @@ while (( i < ${#dataset_pos[*]} )) ; do
 
 	log_must zfs mount $dataset
 	log_must mounted $dataset
-	log_must zfs share -a  # TrueNAS: Do not share via ZFS
+	# log_must zfs share -a  # TrueNAS: Do not share via ZFS
 	log_mustnot is_exported $tmpmnt	# TrueNAS: sharenfs is always disabled
 
 	log_must zfs set sharenfs="${old_sharenfs[i]}" $dataset
