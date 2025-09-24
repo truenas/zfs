@@ -107,29 +107,37 @@ log_must zfs snapshot $TESTPOOL/$TESTVOL@$TESTSNAP
 log_must zfs clone $TESTPOOL/$TESTFS@$TESTSNAP $TESTPOOL/$TESTCLONE
 log_must zfs clone $TESTPOOL/$TESTVOL@$TESTSNAP $TESTPOOL/$TESTCLONE1
 
+log_note "MCG DEBUG: setup 'old' entries"
 typeset -i i=0
 while (( i < ${#dataset_pos[*]} )); do
 	ds=${dataset_pos[i]}
 	old_mnt[i]=$(get_prop mountpoint $ds)
 	old_canmount[i]=$(get_prop canmount $ds)
 	old_sharenfs[i]=$(get_prop sharenfs $ds)
+	log_note "MCG DEBUG: old_mnt[$ds]=${old_mnt[i]}, old_canmount[$ds]=${old_canmount[i]}, old_sharenfs[$ds]=${old_sharenfs[i]}"
 	(( i = i + 1 ))
 done
 
+log_note "MCG DEBUG: Starting into while loop"
 i=0
 while (( i < ${#dataset_pos[*]} )) ; do
 	dataset=${dataset_pos[i]}
+	log_note "MCG DEBUG: set_n_check_prop 'noauto' 'canmount' '$dataset'"
 	set_n_check_prop "noauto" "canmount" "$dataset"
 	log_must zfs set mountpoint=$tmpmnt $dataset
+	log_note "MCG DEBUG: log_mustnot zfs set sharenfs=on $dataset"
 	log_mustnot zfs set sharenfs=on $dataset	# TrueNAS: sharenfs is always disabled
 	if ismounted $dataset; then
 		zfs unmount -a > /dev/null 2>&1
 		log_must mounted $dataset
 		log_must zfs unmount $dataset
 		log_must unmounted $dataset
+		log_note "MCG DEBUG: ismounted: log_must zfs mount -a"
 		log_must zfs mount -a
 		log_must unmounted $dataset
+		log_note "MCG DEBUG: ismounted: log_mustnot zfs share -a"
 		log_mustnot zfs share -a	# TrueNAS: Do not share via ZFS
+		log_note "MCG DEBUG: ismounted: log_mustnot is_exported $tmpmnt"
 		log_mustnot is_exported $tmpmnt
 	else
 		log_must zfs mount -a
@@ -138,18 +146,26 @@ while (( i < ${#dataset_pos[*]} )) ; do
 		log_must unmounted $dataset
 	fi
 
+	log_note "MCG DEBUG: after ismounted: log_must zfs mount $dataset"
 	log_must zfs mount $dataset
+	log_note "MCG DEBUG: after ismounted: log_must mounted $dataset"
 	log_must mounted $dataset
+	log_note "MCG DEBUG: after ismounted: log_mustnot zfs share -a"
 	log_mustnot zfs share -a	# TrueNAS: Do not share via ZFS
+	log_note "MCG DEBUG: after ismounted: log_mustnot is_exported $tmpmnt"
 	log_mustnot is_exported $tmpmnt	# TrueNAS: sharenfs is always disabled
 
+	log_note "MCG DEBUG: end of loop: log_must zfs set sharenfs='${old_sharenfs[i]}' $dataset"
 	log_must zfs set sharenfs="${old_sharenfs[i]}" $dataset
+	log_note "MCG DEBUG: end of loop: log_must zfs set canmount='${old_canmount[i]}' $dataset"
 	log_must zfs set canmount="${old_canmount[i]}" $dataset
+	log_note "MCG DEBUG: end of loop: log_must zfs set mountpoint='${old_mnt[i]}' $dataset"
 	log_must zfs set mountpoint="${old_mnt[i]}" $dataset
 	(( i = i + 1 ))
 done
 
 for dataset in "${dataset_neg[@]}" ; do
+	log_note "MCG DEBUG: exit loop: set_n_check_prop 'noauto' 'canmount' '$dataset' 'false'"
 	set_n_check_prop "noauto" "canmount" "$dataset" "false"
 	log_mustnot ismounted $dataset
 done
