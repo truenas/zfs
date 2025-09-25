@@ -443,6 +443,13 @@ typedef struct l2arc_dev {
 	zfs_refcount_t		l2ad_lb_count;
 	boolean_t		l2ad_trim_all; /* TRIM whole device */
 	/*
+	 * DWPD tracking with daily reset
+	 */
+	uint64_t		l2ad_dwpd_writes;	/* 24h bytes written */
+	uint64_t		l2ad_dwpd_start;	/* 24h period start */
+	uint64_t		l2ad_dwpd_accumulated;	/* Accumulated */
+	uint64_t		l2ad_dwpd_bump;		/* Reset trigger */
+	/*
 	 * Per-device feed thread for parallel L2ARC writes
 	 */
 	kthread_t		*l2ad_feed_thread;	/* feed thread handle */
@@ -1106,6 +1113,8 @@ extern int param_set_arc_u64(ZFS_MODULE_PARAM_ARGS);
 extern int param_set_arc_int(ZFS_MODULE_PARAM_ARGS);
 extern int param_set_arc_min(ZFS_MODULE_PARAM_ARGS);
 extern int param_set_arc_max(ZFS_MODULE_PARAM_ARGS);
+extern int param_set_l2arc_dwpd_limit(ZFS_MODULE_PARAM_ARGS);
+extern void l2arc_dwpd_bump_reset(void);
 
 /* used in zdb.c */
 boolean_t l2arc_log_blkptr_valid(l2arc_dev_t *dev,
