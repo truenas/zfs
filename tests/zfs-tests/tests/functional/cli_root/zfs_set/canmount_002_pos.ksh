@@ -121,7 +121,8 @@ while (( i < ${#dataset_pos[*]} )) ; do
 	dataset=${dataset_pos[i]}
 	set_n_check_prop "noauto" "canmount" "$dataset"
 	log_must zfs set mountpoint=$tmpmnt $dataset
-	log_must zfs set sharenfs=on $dataset
+	# TrueNAS: sharenfs disabled and cannot test with log_must or log_mustnot
+	# log_must zfs set sharenfs=on $dataset
 	if ismounted $dataset; then
 		zfs unmount -a > /dev/null 2>&1
 		log_must mounted $dataset
@@ -129,8 +130,8 @@ while (( i < ${#dataset_pos[*]} )) ; do
 		log_must unmounted $dataset
 		log_must zfs mount -a
 		log_must unmounted $dataset
-		log_must zfs share -a
-		log_mustnot is_exported $tmpmnt
+		# log_must zfs share -a	# TrueNAS: Do not share via ZFS
+		# log_mustnot is_exported $tmpmnt # TrueNAS: avoid false failure
 	else
 		log_must zfs mount -a
 		log_must unmounted $dataset
@@ -140,9 +141,10 @@ while (( i < ${#dataset_pos[*]} )) ; do
 
 	log_must zfs mount $dataset
 	log_must mounted $dataset
-	log_must zfs share -a
-	log_must is_exported $tmpmnt
+	# log_must zfs share -a	# TrueNAS: Do not share via ZFS
+	# log_must is_exported $tmpmnt	# TrueNAS: avoid false failure
 
+	# TrueNAS: set of sharenfs property tested here
 	log_must zfs set sharenfs="${old_sharenfs[i]}" $dataset
 	log_must zfs set canmount="${old_canmount[i]}" $dataset
 	log_must zfs set mountpoint="${old_mnt[i]}" $dataset
