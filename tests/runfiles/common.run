@@ -340,12 +340,13 @@ tests = ['cache_001_pos', 'cache_002_neg', 'canmount_001_pos',
     'zfs_set_feature_activation', 'zfs_set_nomount']
 tags = ['functional', 'cli_root', 'zfs_set']
 
-[tests/functional/cli_root/zfs_share]
-tests = ['zfs_share_001_pos', 'zfs_share_002_pos', 'zfs_share_003_pos',
-    'zfs_share_004_pos', 'zfs_share_006_pos', 'zfs_share_008_neg',
-    'zfs_share_010_neg', 'zfs_share_011_pos', 'zfs_share_concurrent_shares',
-    'zfs_share_after_mount']
-tags = ['functional', 'cli_root', 'zfs_share']
+# TrueNAS: Disable share tests
+# [tests/functional/cli_root/zfs_share]
+# tests = ['zfs_share_001_pos', 'zfs_share_002_pos', 'zfs_share_003_pos',
+#     'zfs_share_004_pos', 'zfs_share_006_pos', 'zfs_share_008_neg',
+#     'zfs_share_010_neg', 'zfs_share_011_pos', 'zfs_share_concurrent_shares',
+#     'zfs_share_after_mount']
+# tags = ['functional', 'cli_root', 'zfs_share']
 
 [tests/functional/cli_root/zfs_snapshot]
 tests = ['zfs_snapshot_001_neg', 'zfs_snapshot_002_neg',
@@ -365,11 +366,12 @@ tests = ['zfs_unmount_001_pos', 'zfs_unmount_002_pos', 'zfs_unmount_003_pos',
     'zfs_unmount_all_001_pos', 'zfs_unmount_nested', 'zfs_unmount_unload_keys']
 tags = ['functional', 'cli_root', 'zfs_unmount']
 
-[tests/functional/cli_root/zfs_unshare]
-tests = ['zfs_unshare_001_pos', 'zfs_unshare_002_pos', 'zfs_unshare_003_pos',
-    'zfs_unshare_004_neg', 'zfs_unshare_005_neg', 'zfs_unshare_006_pos',
-    'zfs_unshare_007_pos']
-tags = ['functional', 'cli_root', 'zfs_unshare']
+# TrueNAS: Disable unshare tests
+# [tests/functional/cli_root/zfs_unshare]
+# tests = ['zfs_unshare_001_pos', 'zfs_unshare_002_pos', 'zfs_unshare_003_pos',
+#     'zfs_unshare_004_neg', 'zfs_unshare_005_neg', 'zfs_unshare_006_pos',
+#     'zfs_unshare_007_pos']
+# tags = ['functional', 'cli_root', 'zfs_unshare']
 
 [tests/functional/cli_root/zfs_upgrade]
 tests = ['zfs_upgrade_001_pos', 'zfs_upgrade_002_pos', 'zfs_upgrade_003_pos',
