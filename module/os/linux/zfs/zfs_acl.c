@@ -2304,8 +2304,8 @@ zfs_stripacl(znode_t *zp, cred_t *cr)
 
 	kmem_free(vsec.vsa_aclentp, vsec.vsa_aclentsz);
 
-	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
-		zil_commit(zfsvfs->z_log, 0);
+	if (error == 0 && zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
+		error = zil_commit(zfsvfs->z_log, 0);
 
 done:
 	ZFS_EXIT(zfsvfs);
