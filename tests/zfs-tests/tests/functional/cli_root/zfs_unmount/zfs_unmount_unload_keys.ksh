@@ -52,13 +52,18 @@ function cleanup
 		destroy_dataset $TESTPOOL/$TESTFS2/newroot -r
 	datasetexists $TESTPOOL/$TESTFS2/child && \
 		destroy_dataset $TESTPOOL/$TESTFS2/child -r
-
+	datasetexists $TESTPOOL/$TESTFS3 && \
+		destroy_dataset $TESTPOOL/$TESTFS3 -r
+	datasetexists $TESTPOOL/$TESTFS3/child && \
+		destroy_dataset $TESTPOOL/$TESTFS3/child -r
 }
 log_onexit cleanup
 
 log_assert "'zfs unmount -u' should unload keys for datasets as they are unmounted"
 log_must eval "echo 'password' | zfs create -o encryption=on -o keyformat=passphrase $TESTPOOL/$TESTFS2"
 log_must eval "echo 'password' | zfs create -o encryption=on -o keyformat=passphrase $TESTPOOL/$TESTFS2/newroot"
+log_must eval "echo 'password' | zfs create -o encryption=on -o keyformat=passphrase $TESTPOOL/$TESTFS3"
+log_must eval "echo 'password' | zfs create -o encryption=on -o keyformat=passphrase $TESTPOOL/$TESTFS3/child"
 log_must zfs create $TESTPOOL/$TESTFS2/child
 
 log_must zfs umount -u $TESTPOOL/$TESTFS2/newroot
@@ -76,5 +81,11 @@ log_must zfs clone $TESTPOOL/$TESTFS2/newroot@1 $TESTPOOL/$TESTFS2/clone
 log_mustnot zfs umount -u $TESTPOOL/$TESTFS2/newroot
 log_must key_available $TESTPOOL/$TESTFS2/newroot
 log_must mounted $TESTPOOL/$TESTFS2/newroot
+
+log_must zfs umount $TESTPOOL/$TESTFS3/child
+log_must key_available $TESTPOOL/$TESTFS3/child
+log_must zfs umount -u $TESTPOOL/$TESTFS3
+log_must key_unavailable $TESTPOOL/$TESTFS3
+log_must key_unavailable $TESTPOOL/$TESTFS3/child
 
 log_pass "'zfs unmount -u' unloads keys for datasets as they are unmounted"

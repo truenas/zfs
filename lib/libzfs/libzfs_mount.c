@@ -666,10 +666,27 @@ int
 zfs_unmountall(zfs_handle_t *zhp, int flags)
 {
 	prop_changelist_t *clp;
+	int gather_flags = 0;
 	int ret;
 
+	/*
+	 * Historically CL_GATHER_ITER_MOUNTED was always set here, which uses
+	 * zfs_iter_mounted() and at the end of the day zfs_umount() each
+	 * mounted child that inherits the mountpoint property from the
+	 * filesystem specified by zhp.
+	 *
+	 * When MS_CRYPT is specified in flags for safety sake we extend
+	 * behavior of zfs_umount() to call zfs_unmount() on all child
+	 * filesystems that inherit the mountpoint property (regardless of they
+	 * they are mounted or not). This ensures that the encryption keys for
+	 * all encryption roots in child filesystems are unloaded whether they
+	 * are mounted or not.
+	 */
+	if ((flags & MS_CRYPT) == 0)
+		gather_flags |= CL_GATHER_ITER_MOUNTED;
+
 	clp = changelist_gather(zhp, ZFS_PROP_MOUNTPOINT,
-	    CL_GATHER_ITER_MOUNTED, flags);
+	    gather_flags, flags);
 	if (clp == NULL)
 		return (-1);
 
