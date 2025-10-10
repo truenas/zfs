@@ -39,6 +39,8 @@
 
 verify_runnable "global"
 
+log_unsupported "SKIP because auto partitioning removed for SCALE"
+
 function cleanup
 {
 	log_must zinject -c all

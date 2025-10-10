@@ -559,6 +559,7 @@ const sa_fstype_t libshare_nfs_type = {
 static boolean_t
 nfs_available(void)
 {
+#ifdef TRUENAS_ENABLE_ZFS_SHARING
 	static int avail;
 
 	if (!avail) {
@@ -569,11 +570,15 @@ nfs_available(void)
 	}
 
 	return (avail == 1);
+#else
+	return (B_FALSE);
+#endif
 }
 
 static boolean_t
 exports_available(void)
 {
+#ifdef TRUENAS_ENABLE_ZFS_SHARING
 	static int avail;
 
 	if (!avail) {
@@ -584,4 +589,7 @@ exports_available(void)
 	}
 
 	return (avail == 1);
+#else
+	return (B_FALSE);
+#endif
 }
