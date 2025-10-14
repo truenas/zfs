@@ -187,6 +187,18 @@ function cmp_ds_cont
 	srcdir=$(get_prop mountpoint $src_fs)
 	dstdir=$(get_prop mountpoint $dst_fs)
 
+	log_note "DEBUG: cmp_ds_cont comparing $src_fs ($srcdir) with $dst_fs ($dstdir)"
+	# List contents for debugging
+	log_note "DEBUG: Source dir contents:"
+	ls -la "$srcdir" 2>&1 | head -10 || true
+	log_note "DEBUG: Dest dir contents:"
+	ls -la "$dstdir" 2>&1 | head -10 || true
+	# Check for zvol devices
+	log_note "DEBUG: Checking for zvol devices:"
+	ls -la /dev/zd* 2>&1 | head -10 || log_note "No zvol devices found"
+	# Check dmesg for any errors
+	dmesg | tail -5 | grep -i "debugfs\|error" || true
+
 	replay_directory_diff $srcdir $dstdir
 }
 

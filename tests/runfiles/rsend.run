@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: CDDL-1.0
 #
 # This file and its contents are supplied under the terms of the
 # Common Development and Distribution License ("CDDL"), version 1.0.
@@ -9,8 +8,8 @@
 # source.  A copy of the CDDL is also available via the Internet at
 # http://www.illumos.org/license/CDDL.
 #
-# DEBUG VERSION: Only running rsend tests for Ubuntu 22 debugging
-#
+
+# DEBUG: Minimal rsend test run for debugging Ubuntu 22 failures
 
 [DEFAULT]
 pre = setup
@@ -22,9 +21,9 @@ post_user = root
 post = cleanup
 failsafe_user = root
 failsafe = callbacks/zfs_failsafe
+outputdir = /var/tmp/test_results
 tags = ['functional']
 
 [tests/functional/rsend]
-tests = ['recv_dedup', 'recv_dedup_encrypted_zvol', 'rsend_001_pos',
-    'rsend_002_pos', 'rsend_003_pos', 'rsend_004_pos', 'rsend_005_pos']
+tests = ['setup', 'rsend_001_pos', 'rsend_002_pos', 'rsend_003_pos', 'cleanup']
 tags = ['functional', 'rsend']

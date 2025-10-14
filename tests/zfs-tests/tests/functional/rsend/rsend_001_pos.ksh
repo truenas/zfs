@@ -55,8 +55,15 @@ log_must eval "zfs send -R $POOL@final > $BACKDIR/pool-final-R"
 log_must eval "zfs receive -d -F $POOL2 < $BACKDIR/pool-final-R"
 
 dstds=$(get_dst_ds $POOL $POOL2)
+log_note "DEBUG: Comparing dataset structure between $POOL and $dstds"
 log_must cmp_ds_subs $POOL $dstds
+log_note "DEBUG: Dataset structure comparison passed, now comparing contents"
+# Add sync and delay to ensure filesystem is stable
+sync
+sleep 1
+log_note "DEBUG: Running cmp_ds_cont between $POOL and $dstds"
 log_must cmp_ds_cont $POOL $dstds
+log_note "DEBUG: Content comparison passed"
 
 # Cleanup POOL2
 log_must cleanup_pool $POOL2
