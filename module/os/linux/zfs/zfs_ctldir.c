@@ -122,6 +122,7 @@ typedef struct {
 	struct dentry   *se_root_dentry; /* snapshot root dentry */
 	krwlock_t	se_taskqid_lock;  /* scheduled unmount taskqid lock */
 	taskqid_t	se_taskqid;	/* scheduled unmount taskqid */
+	boolean_t	se_unmount_in_progress;	/* unmount currently active */
 	avl_node_t	se_node_name;	/* zfs_snapshots_by_name link */
 	avl_node_t	se_node_objsetid; /* zfs_snapshots_by_objsetid link */
 	zfs_refcount_t	se_refcount;	/* reference count */
@@ -147,6 +148,7 @@ zfsctl_snapshot_alloc(const char *full_name, const char *full_path, spa_t *spa,
 	se->se_objsetid = objsetid;
 	se->se_root_dentry = root_dentry;
 	se->se_taskqid = TASKQID_INVALID;
+	se->se_unmount_in_progress = B_FALSE;
 	rw_init(&se->se_taskqid_lock, NULL, RW_DEFAULT, NULL);
 
 	zfs_refcount_create(&se->se_refcount);
@@ -368,6 +370,17 @@ zfsctl_snapshot_unmount_cancel(zfs_snapentry_t *se)
 {
 	int err = 0;
 	rw_enter(&se->se_taskqid_lock, RW_WRITER);
+
+	/*
+	 * If unmount is already in progress (from zfsctl_destroy),
+	 * skip cancellation to avoid blocking. This prevents deadlock
+	 * when arc_prune tries to cancel while umount is active.
+	 */
+	if (se->se_unmount_in_progress) {
+		rw_exit(&se->se_taskqid_lock);
+		return;
+	}
+
 	err = taskq_cancel_id(system_delay_taskq, se->se_taskqid);
 	/*
 	 * if we get ENOENT, the taskq couldn't be found to be
@@ -426,13 +439,15 @@ zfsctl_snapshot_unmount_delay(spa_t *spa, uint64_t objsetid, int delay)
 	int error = ENOENT;
 
 	rw_enter(&zfs_snapshot_lock, RW_READER);
-	if ((se = zfsctl_snapshot_find_by_objsetid(spa, objsetid)) != NULL) {
+	se = zfsctl_snapshot_find_by_objsetid(spa, objsetid);
+	rw_exit(&zfs_snapshot_lock);
+
+	if (se != NULL) {
 		zfsctl_snapshot_unmount_cancel(se);
 		zfsctl_snapshot_unmount_delay_impl(se, delay);
 		zfsctl_snapshot_rele(se);
 		error = 0;
 	}
-	rw_exit(&zfs_snapshot_lock);
 
 	return (error);
 }
@@ -618,6 +633,14 @@ zfsctl_destroy(zfsvfs_t *zfsvfs)
 			zfsctl_snapshot_remove(se);
 		rw_exit(&zfs_snapshot_lock);
 		if (se != NULL) {
+			/*
+			 * Set unmount_in_progress flag under taskqid_lock
+			 * to synchronize with zfsctl_snapshot_unmount_cancel()
+			 */
+			rw_enter(&se->se_taskqid_lock, RW_WRITER);
+			se->se_unmount_in_progress = B_TRUE;
+			rw_exit(&se->se_taskqid_lock);
+
 			zfsctl_snapshot_unmount_cancel(se);
 			zfsctl_snapshot_rele(se);
 		}
