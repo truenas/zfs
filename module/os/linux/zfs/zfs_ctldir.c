@@ -368,14 +368,19 @@ zfsctl_snapshot_unmount_cancel(zfs_snapentry_t *se)
 {
 	int err = 0;
 	rw_enter(&se->se_taskqid_lock, RW_WRITER);
-	err = taskq_cancel_id(system_delay_taskq, se->se_taskqid);
 	/*
-	 * if we get ENOENT, the taskq couldn't be found to be
-	 * canceled, so we can just mark it as invalid because
-	 * it's already gone. If we got EBUSY, then we already
-	 * blocked until it was gone _anyway_, so we don't care.
+	 * Use wait=B_FALSE to prevent deadlock. The running task holds
+	 * se->se_taskqid_lock briefly, so blocking here while holding the
+	 * lock can cause a deadlock if an independent caller tries to cancel
+	 * while the task is trying to acquire the same lock.
 	 */
-	se->se_taskqid = TASKQID_INVALID;
+	err = taskq_cancel_id(system_delay_taskq, se->se_taskqid, B_FALSE);
+	/*
+	 * Clear taskqid unless task is still running (EBUSY), in which
+	 * case the running task will clear it when done.
+	 */
+	if (err != EBUSY)
+		se->se_taskqid = TASKQID_INVALID;
 	rw_exit(&se->se_taskqid_lock);
 	if (err == 0) {
 		zfsctl_snapshot_rele(se);

@@ -601,12 +601,15 @@ EXPORT_SYMBOL(taskq_of_curthread);
 
 /*
  * Cancel an already dispatched task given the task id.  Still pending tasks
- * will be immediately canceled, and if the task is active the function will
- * block until it completes.  Preallocated tasks which are canceled must be
- * freed by the caller.
+ * will be immediately canceled, and if the task is active the behavior
+ * depends on the wait parameter:
+ *   - If wait is B_TRUE, the function will block until the task completes.
+ *   - If wait is B_FALSE, the function will return EBUSY immediately without
+ *     waiting.
+ * Preallocated tasks which are canceled must be freed by the caller.
  */
 int
-taskq_cancel_id(taskq_t *tq, taskqid_t id)
+taskq_cancel_id(taskq_t *tq, taskqid_t id, boolean_t wait)
 {
 	taskq_ent_t *t;
 	int rc = ENOENT;
@@ -652,7 +655,8 @@ taskq_cancel_id(taskq_t *tq, taskqid_t id)
 	spin_unlock_irqrestore(&tq->tq_lock, flags);
 
 	if (t == ERR_PTR(-EBUSY)) {
-		taskq_wait_id(tq, id);
+		if (wait)
+			taskq_wait_id(tq, id);
 		rc = EBUSY;
 	}
 
