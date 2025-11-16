@@ -1292,11 +1292,25 @@ zfsctl_snapshot_mount(struct path *path, int flags)
 		spath.mnt->mnt_flags |= MNT_SHRINKABLE;
 
 		rw_enter(&zfs_snapshot_lock, RW_WRITER);
-		se = zfsctl_snapshot_alloc(full_name, full_path,
-		    snap_zfsvfs->z_os->os_spa, dmu_objset_id(snap_zfsvfs->z_os),
-		    dentry);
-		zfsctl_snapshot_add(se);
-		zfsctl_snapshot_unmount_delay_impl(se, zfs_expire_snapshot);
+		/*
+		 * Recheck if another thread added the entry while we were
+		 * mounting. This handles the race where multiple threads
+		 * simultaneously mount the same fresh snapshot.
+		 */
+		se = zfsctl_snapshot_find_by_name(full_name);
+		if (se != NULL) {
+			/* Already mounted by another thread - not an error */
+			zfsctl_snapshot_rele(se);
+			se = NULL;
+		} else {
+			/* We're first - allocate and add to AVL trees */
+			se = zfsctl_snapshot_alloc(full_name, full_path,
+			    snap_zfsvfs->z_os->os_spa,
+			    dmu_objset_id(snap_zfsvfs->z_os), dentry);
+			zfsctl_snapshot_add(se);
+			zfsctl_snapshot_unmount_delay_impl(se,
+			    zfs_expire_snapshot);
+		}
 		rw_exit(&zfs_snapshot_lock);
 	}
 	path_put(&spath);
