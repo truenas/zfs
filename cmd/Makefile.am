@@ -107,6 +107,17 @@ $(call SUBST,dbufstat,%D%/)
 $(call SUBST,zilstat,%D%/)
 zarcsummary: %D%/zarcsummary
 	$(AM_V_at)cp $< $@
+
+# NAS-138673: Create backward compatibility symlinks for renamed zarcsummary
+# and zarcstat tools (previously arc_summary and arcstat)
+install-exec-hook:
+	$(MKDIR_P) $(DESTDIR)$(sbindir)
+	$(LN_S) -f $(bindir)/zarcstat $(DESTDIR)$(sbindir)/arcstat
+	$(LN_S) -f $(bindir)/zarcsummary $(DESTDIR)$(sbindir)/arc_summary
+
+uninstall-hook:
+	$(RM) $(DESTDIR)$(sbindir)/arcstat
+	$(RM) $(DESTDIR)$(sbindir)/arc_summary
 endif
 
 PHONY += cmd
