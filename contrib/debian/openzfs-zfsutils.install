@@ -40,6 +40,8 @@ usr/bin/zarcsummary
 usr/bin/zarcstat
 usr/bin/dbufstat usr/sbin
 usr/bin/zilstat
+usr/sbin/arc_summary
+usr/sbin/arcstat
 usr/share/zfs/compatibility.d/
 usr/share/bash-completion/completions
 usr/share/man/man1/zarcstat.1
