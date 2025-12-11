@@ -3662,6 +3662,7 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 	}
 	ASSERT(!HDR_IO_IN_PROGRESS(hdr));
 	ASSERT(!HDR_IN_HASH_TABLE(hdr));
+	boolean_t l1hdr_destroyed = B_FALSE;
 
 	/*
 	 * Destroy L1HDR before L2HDR so that arc_hdr_free_abd() can
@@ -3686,7 +3687,7 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 		 * want to re-destroy the header's L2 portion.
 		 */
 		if (HDR_HAS_L2HDR(hdr)) {
-
+			l1hdr_destroyed = B_TRUE;
 			if (!HDR_EMPTY(hdr))
 				buf_discard_identity(hdr);
 
@@ -3709,8 +3710,9 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 
 		if (!buflist_held)
 			mutex_exit(&dev->l2ad_mtx);
-	} else {
-		/* No L2HDR - just destroy L1HDR if present */
+	}
+
+	if (!l1hdr_destroyed) {
 		if (!HDR_EMPTY(hdr))
 			buf_discard_identity(hdr);
 
