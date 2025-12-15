@@ -3665,10 +3665,9 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 	boolean_t l1hdr_destroyed = B_FALSE;
 
 	/*
-	 * Destroy L1HDR before L2HDR so that arc_hdr_free_abd() can
-	 * access L2HDR to properly defer ABDs that are being written
-	 * to L2ARC. If we destroyed L2HDR first, we'd have L2_WRITING
-	 * set but no L2HDR, preventing proper ABD deferred free.
+	 * If L2_WRITING, destroy L1HDR before L2HDR (under mutex) so
+	 * arc_hdr_free_abd() can properly defer ABDs. Otherwise, destroy
+	 * L1HDR outside mutex to minimize contention.
 	 */
 	if (HDR_HAS_L2HDR(hdr)) {
 		l2arc_dev_t *dev = hdr->b_l2hdr.b_dev;
@@ -3687,22 +3686,25 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 		 * want to re-destroy the header's L2 portion.
 		 */
 		if (HDR_HAS_L2HDR(hdr)) {
-			l1hdr_destroyed = B_TRUE;
-			if (!HDR_EMPTY(hdr))
-				buf_discard_identity(hdr);
+			if (HDR_L2_WRITING(hdr)) {
+				l1hdr_destroyed = B_TRUE;
 
-			if (HDR_HAS_L1HDR(hdr)) {
-				arc_cksum_free(hdr);
+				if (!HDR_EMPTY(hdr))
+					buf_discard_identity(hdr);
 
-				while (hdr->b_l1hdr.b_buf != NULL)
-					arc_buf_destroy_impl(
-					    hdr->b_l1hdr.b_buf);
+				if (HDR_HAS_L1HDR(hdr)) {
+					arc_cksum_free(hdr);
 
-				if (hdr->b_l1hdr.b_pabd != NULL)
-					arc_hdr_free_abd(hdr, B_FALSE);
+					while (hdr->b_l1hdr.b_buf != NULL)
+						arc_buf_destroy_impl(
+						    hdr->b_l1hdr.b_buf);
 
-				if (HDR_HAS_RABD(hdr))
-					arc_hdr_free_abd(hdr, B_TRUE);
+					if (hdr->b_l1hdr.b_pabd != NULL)
+						arc_hdr_free_abd(hdr, B_FALSE);
+
+					if (HDR_HAS_RABD(hdr))
+						arc_hdr_free_abd(hdr, B_TRUE);
+				}
 			}
 
 			arc_hdr_l2hdr_destroy(hdr);
