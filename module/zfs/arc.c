@@ -6752,6 +6752,17 @@ arc_release(arc_buf_t *buf, const void *tag)
 
 		ASSERT(hdr->b_l1hdr.b_pabd != NULL || HDR_HAS_RABD(hdr));
 
+		/*
+		 * In the single_buf_l2writing case, if the buffer is shared
+		 * we need to break the sharing relationship before moving
+		 * the buffer to a new header. This is safe because when
+		 * HDR_SHARED_DATA is true, L2ARC makes its own copy via
+		 * l2arc_apply_transforms() rather than using b_pabd directly.
+		 */
+		if (single_buf_l2writing && ARC_BUF_SHARED(buf)) {
+			arc_unshare_buf(hdr, buf);
+		}
+
 		(void) zfs_refcount_remove_many(&state->arcs_size[type],
 		    arc_buf_size(buf), buf);
 
