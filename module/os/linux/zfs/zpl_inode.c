@@ -506,6 +506,14 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 	}
 #endif
 
+#ifdef STATX_CHANGE_COOKIE
+	if (request_mask & STATX_CHANGE_COOKIE) {
+		stat->change_cookie = zp->z_seq;
+		stat->attributes |= STATX_ATTR_CHANGE_MONOTONIC;
+		stat->result_mask |= STATX_CHANGE_COOKIE;
+	}
+#endif
+
 #ifdef STATX_DIOALIGN
 	if (request_mask & STATX_DIOALIGN) {
 		uint64_t align;
