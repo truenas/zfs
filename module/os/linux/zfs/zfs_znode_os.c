@@ -1412,7 +1412,7 @@ zfs_tstamp_update_setup(znode_t *zp, uint_t flag, uint64_t mtime[2],
 {
 	inode_timespec_t now, tmp_ts;
 
-	gethrestime(&now);
+	now = current_time(ZTOI(zp));
 
 	zp->z_seq++;
 
