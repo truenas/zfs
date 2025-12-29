@@ -197,9 +197,6 @@ secpolicy_vnode_any_access(const cred_t *cr, struct inode *ip, uid_t owner)
 int
 secpolicy_vnode_chown(const cred_t *cr, uid_t owner)
 {
-	if (crgetuid(cr) == owner)
-		return (0);
-
 #if defined(CONFIG_USER_NS)
 	if (!kuid_has_mapping(cr->user_ns, SUID_TO_KUID(owner)))
 		return (EPERM);
@@ -382,6 +379,9 @@ secpolicy_setid_setsticky_clear(struct inode *ip, vattr_t *vap,
 int
 secpolicy_xvattr(xvattr_t *xvap, uid_t owner, cred_t *cr, mode_t type)
 {
+	if (crgetuid(cr) == owner)
+		return (0);
+
 	return (secpolicy_vnode_chown(cr, owner));
 }
 
