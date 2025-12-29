@@ -2428,12 +2428,26 @@ zfs_zaccess_aces_check(znode_t *zp, uint32_t *working_mode,
 		    (iflags & ACE_INHERIT_ONLY_ACE))
 			continue;
 
+		entry_type = (iflags & ACE_TYPE_FLAGS);
+		if ((entry_type == ACE_OWNER || entry_type == OWNING_GROUP ||
+		    entry_type == ACE_EVERYONE) && (type == ALLOW)) {
+			/*
+			 * Reduce access granted by owner, group, and everyone
+			 * entries to not include the ability to change the
+			 * owner or ACL.
+			 * This is to prevent elevation of permissions on file
+			 * beyond what would be normally granted by the file's
+			 * mode. This still allows users with CAP_FOWNER
+			 * or with explicit entry (GROUP or USER entry) to
+			 * modify the owner or ACL.
+			 */
+			access_mask &= ~(ACE_WRITE_ACL | ACE_WRITE_OWNER);
+		}
+
 		/* Skip ACE if it does not affect any AoI */
 		mask_matched = (access_mask & *working_mode);
 		if (!mask_matched)
 			continue;
-
-		entry_type = (iflags & ACE_TYPE_FLAGS);
 
 		checkit = B_FALSE;
 
@@ -2838,8 +2852,20 @@ zfs_zaccess(znode_t *zp, int mode, int flags, boolean_t skipaclchk, cred_t *cr,
 
 		if (error == 0 && (working_mode & ACE_WRITE_OWNER))
 			error = secpolicy_vnode_chown(cr, owner);
-		if (error == 0 && (working_mode & ACE_WRITE_ACL))
-			error = secpolicy_vnode_setdac(cr, owner);
+
+		if (error == 0 && (working_mode & ACE_WRITE_ACL)) {
+			/*
+			 * For a non-trivial ACL write-acl override implies
+			 * ability to write the owner of a file (since user
+			 * can grant self ACE_WRITE_OWNER. This means that
+			 * we need to check chown policy.
+			 */
+
+			if (zp->z_pflags & ZFS_ACL_TRIVIAL)
+				error = secpolicy_vnode_setdac(cr, owner);
+			else
+				error = secpolicy_vnode_chown(cr, owner);
+		}
 
 		if (error == 0 && (working_mode &
 		    (ACE_DELETE|ACE_DELETE_CHILD)))
