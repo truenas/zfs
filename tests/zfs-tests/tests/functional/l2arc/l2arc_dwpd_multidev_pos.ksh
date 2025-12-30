@@ -37,11 +37,19 @@ verify_runnable "global"
 
 log_assert "L2ARC DWPD rate limiting works independently per device."
 
+# Test parameters
+typeset cache_sz=200
+typeset fill_mb=500
+typeset test_time=10
+typeset VDEV_CACHE2="$VDIR/cache2"
+
 function cleanup
 {
 	if poolexists $TESTPOOL ; then
 		destroy_pool $TESTPOOL
 	fi
+
+	rm -f $VDEV_CACHE $VDEV_CACHE2
 
 	log_must set_tunable32 L2ARC_WRITE_MAX $write_max
 	log_must set_tunable32 L2ARC_NOPREFETCH $noprefetch
@@ -57,12 +65,6 @@ typeset noprefetch=$(get_tunable L2ARC_NOPREFETCH)
 typeset dwpd_limit=$(get_tunable L2ARC_DWPD_LIMIT)
 typeset arc_min=$(get_tunable ARC_MIN)
 typeset arc_max=$(get_tunable ARC_MAX)
-
-# Test parameters
-typeset cache_sz=200
-typeset fill_mb=500
-typeset test_time=10
-typeset VDEV_CACHE2="$VDIR/cache2"
 
 # Set DWPD before pool creation
 log_must set_tunable32 L2ARC_DWPD_LIMIT 100

@@ -37,11 +37,21 @@ verify_runnable "global"
 
 log_assert "L2ARC parallel writes scale with number of cache devices."
 
+# Test parameters
+typeset num_devs=5
+typeset cache_sz=200
+typeset test_time=5
+typeset expected_rate=$((32 * 1024 * 1024))  # 32 MB/s per device
+
 function cleanup
 {
 	if poolexists $TESTPOOL ; then
 		destroy_pool $TESTPOOL
 	fi
+
+	for i in $(seq 1 $num_devs); do
+		rm -f "$VDIR/cache$i"
+	done
 
 	log_must set_tunable32 L2ARC_WRITE_MAX $write_max
 	log_must set_tunable32 L2ARC_NOPREFETCH $noprefetch
@@ -57,12 +67,6 @@ typeset noprefetch=$(get_tunable L2ARC_NOPREFETCH)
 typeset dwpd_limit=$(get_tunable L2ARC_DWPD_LIMIT)
 typeset arc_min=$(get_tunable ARC_MIN)
 typeset arc_max=$(get_tunable ARC_MAX)
-
-# Test parameters
-typeset num_devs=5
-typeset cache_sz=200
-typeset test_time=5
-typeset expected_rate=$((32 * 1024 * 1024))  # 32 MB/s per device
 
 # Disable DWPD rate limiting
 log_must set_tunable32 L2ARC_DWPD_LIMIT 0
