@@ -64,7 +64,8 @@ zpl_encode_fh(struct inode *ip, __u32 *fh, int *max_len, struct inode *parent)
 	 * if the NFS export has subtree checking enabled.
 	 */
 	if (parent != NULL) {
-		if ((rc == 0) && (len_bytes > required_len)) {
+		if ((rc == 0) && (len_bytes >
+		    required_len + offsetof(fid_t, fid_data))) {
 			parent_len = len_bytes - required_len;
 			pfid = (fid_t *)((char *)fh + required_len);
 			pfid->fid_len = parent_len - offsetof(fid_t, fid_data);
