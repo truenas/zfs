@@ -151,14 +151,16 @@ zpl_fh_to_parent(struct super_block *sb, struct fid *fh,
 	 * offset in the provided buffer to the begining of the
 	 * parent fid_t and call zpl_fh_to_dentry() on it.
 	 */
-	fid_t *fid, *pfid;
+	fid_t *fid = (fid_t *)fh;
+	fid_t *pfid;
 	int len_bytes, parent_len_bytes, child_fid_bytes, parent_fh_len;
 
-	if (fh_type != FILEID_INO32_GEN_PARENT)
-		return (ERR_PTR(-EINVAL));
-
-	fid = (fid_t *)fh;
 	len_bytes = fh_len * sizeof (__u32);
+
+	if ((fh_type != FILEID_INO32_GEN_PARENT) ||
+	    len_bytes < offsetof(fid_t, fid_data) ||
+	    len_bytes < offsetof(fid_t, fid_data) + fid->fid_len)
+		return (ERR_PTR(-EINVAL));
 
 	child_fid_bytes = offsetof(fid_t, fid_data) + fid->fid_len;
 	parent_len_bytes = len_bytes - child_fid_bytes;
