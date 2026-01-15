@@ -390,6 +390,7 @@ const sa_fstype_t libshare_smb_type = {
 static boolean_t
 smb_available(void)
 {
+#ifdef TRUENAS_ENABLE_ZFS_SHARING
 	static int avail;
 
 	if (!avail) {
@@ -404,4 +405,8 @@ smb_available(void)
 	}
 
 	return (avail == 1);
+#else
+	/* TrueNAS: Disable SMB sharing */
+	return (B_FALSE);
+#endif
 }
