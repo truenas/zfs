@@ -75,10 +75,10 @@ log_must set_tunable32 L2ARC_NOPREFETCH 0
 log_must set_tunable64 ARC_MIN $((512 * 1024 * 1024))
 log_must set_tunable64 ARC_MAX $((1024 * 1024 * 1024))
 
-# Create cache devices
+# Create cache devices (using letters e-i to follow cfg naming convention)
 typeset cache_devs=""
-for i in $(seq 1 $num_devs); do
-	typeset dev="$VDIR/cache$i"
+for letter in e f g h i; do
+	typeset dev="$VDIR/$letter"
 	log_must truncate -s ${cache_sz}M $dev
 	cache_devs="$cache_devs $dev"
 done
@@ -99,10 +99,14 @@ typeset expected_mb=$((expected / 1024 / 1024))
 
 log_note "L2ARC writes: ${bytes_mb}MB (expected ~${expected_mb}MB)"
 
-# Verify writes are at least 80% of expected
+# Verify writes are within expected range (80-150%)
 typeset min_bytes=$((expected * 80 / 100))
+typeset max_bytes=$((expected * 150 / 100))
 if [[ $bytes -lt $min_bytes ]]; then
 	log_fail "Writes ${bytes_mb}MB below minimum $((min_bytes/1024/1024))MB"
+fi
+if [[ $bytes -gt $max_bytes ]]; then
+	log_fail "Writes ${bytes_mb}MB above maximum $((max_bytes/1024/1024))MB"
 fi
 
 log_must zpool destroy $TESTPOOL
