@@ -67,7 +67,6 @@ save_tunable ARC_MAX
 typeset cache_sz=900   # 900MB per device
 typeset fill_mb=2500   # 2.5GB initial data
 typeset test_time=25   # Measurement window: 16MB/s × 25s = 400MB per device
-typeset VDEV_CACHE2="$VDIR/cache2"
 
 # Disable DWPD to test pure parallel throughput
 log_must set_tunable32 L2ARC_DWPD_LIMIT 0
