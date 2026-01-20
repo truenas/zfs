@@ -8519,9 +8519,7 @@ l2arc_write_size(l2arc_dev_t *dev, clock_t *interval)
 	uint64_t size;
 	uint64_t write_rate = l2arc_get_write_rate(dev);
 
-	if (write_rate > L2ARC_BURST_SIZE_MAX &&
-	    dev->l2ad_spa->spa_l2arc_info.l2arc_total_capacity >=
-	    L2ARC_PERSIST_THRESHOLD) {
+	if (write_rate > L2ARC_BURST_SIZE_MAX) {
 		/* Calculate interval to achieve desired rate with burst cap */
 		uint64_t feeds_per_sec =
 		    MAX(write_rate / L2ARC_BURST_SIZE_MAX, 1);
@@ -10133,13 +10131,6 @@ l2arc_feed_thread(void *arg)
 
 		ARCSTAT_BUMP(arcstat_l2_feeds);
 
-		/*
-		 * Check if using adaptive intervals (persistent markers).
-		 */
-		boolean_t use_adaptive_interval =
-		    (spa->spa_l2arc_info.l2arc_total_capacity >=
-		    L2ARC_PERSIST_THRESHOLD);
-
 		clock_t interval;
 		boolean_t was_first = dev->l2ad_first;
 		size = l2arc_write_size(dev, &interval);
@@ -10167,14 +10158,12 @@ l2arc_feed_thread(void *arg)
 		wrote = l2arc_write_buffers(spa, dev, size);
 
 		/*
-		 * If smaller device, use legacy approach based on data written
+		 * Adjust interval based on actual write.
 		 */
-		if (!use_adaptive_interval) {
-			if (l2arc_feed_again && wrote > (size / 2))
-				interval = (hz * l2arc_feed_min_ms) / 1000;
-			else
-				interval = hz * l2arc_feed_secs;
-		}
+		if (wrote == 0)
+			interval = hz * l2arc_feed_secs;
+		else if (wrote < size)
+			interval = (interval * wrote) / size;
 
 		/*
 		 * Calculate next feed time.
