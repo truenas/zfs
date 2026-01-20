@@ -6702,18 +6702,10 @@ arc_release(arc_buf_t *buf, const void *tag)
 		/*
 		 * Pull the buffer off of this hdr and find the last buffer
 		 * in the hdr's buffer list.
-		 *
-		 * For single_buf_l2writing, remove the buffer first to ensure
-		 * evictable space accounting sees consistent state.
 		 */
-		arc_buf_t *lastbuf;
-		if (single_buf_l2writing) {
-			(void) arc_buf_remove(hdr, buf);
-		} else {
-			VERIFY3S(remove_reference(hdr, tag), >, 0);
-			lastbuf = arc_buf_remove(hdr, buf);
+		arc_buf_t *lastbuf = arc_buf_remove(hdr, buf);
+		if (!single_buf_l2writing)
 			ASSERT3P(lastbuf, !=, NULL);
-		}
 
 		/*
 		 * If the current arc_buf_t and the hdr are sharing their data
@@ -6771,10 +6763,17 @@ arc_release(arc_buf_t *buf, const void *tag)
 		if (!arc_hdr_has_uncompressed_buf(hdr))
 			arc_cksum_free(hdr);
 
+		uint8_t complevel = hdr->b_complevel;
+
+		if (single_buf_l2writing)
+			VERIFY3S(remove_reference(hdr, tag), ==, 0);
+		else
+			VERIFY3S(remove_reference(hdr, tag), >, 0);
+
 		mutex_exit(hash_lock);
 
-		nhdr = arc_hdr_alloc(spa, psize, lsize, protected,
-		    compress, hdr->b_complevel, type);
+		nhdr = arc_hdr_alloc(spa, psize, lsize, protected, compress,
+		    complevel, type);
 		ASSERT0P(nhdr->b_l1hdr.b_buf);
 		ASSERT0(zfs_refcount_count(&nhdr->b_l1hdr.b_refcnt));
 		VERIFY3U(nhdr->b_type, ==, type);
@@ -6786,12 +6785,6 @@ arc_release(arc_buf_t *buf, const void *tag)
 
 		(void) zfs_refcount_add_many(&arc_anon->arcs_size[type],
 		    arc_buf_size(buf), buf);
-
-		if (single_buf_l2writing) {
-			mutex_enter(hash_lock);
-			VERIFY3S(remove_reference(hdr, tag), ==, 0);
-			mutex_exit(hash_lock);
-		}
 	} else {
 		ASSERT(zfs_refcount_count(&hdr->b_l1hdr.b_refcnt) == 1);
 		/* protected by hash lock, or hdr is on arc_anon */
