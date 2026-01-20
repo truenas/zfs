@@ -9184,16 +9184,17 @@ l2arc_dwpd_rate_limit(l2arc_dev_t *dev)
 	}
 
 	uint64_t elapsed = now - dev->l2ad_dwpd_start;
-	uint64_t dwpd_budget = daily_budget / (24 * 3600);
-	uint64_t expected_writes = elapsed * dwpd_budget;
+	uint64_t remaining_secs = MAX((24 * 3600) - elapsed, 1);
+	uint64_t total_budget = daily_budget + dev->l2ad_dwpd_accumulated;
 
-	uint64_t available_budget = dwpd_budget + dev->l2ad_dwpd_accumulated;
-	if (expected_writes > dev->l2ad_dwpd_writes) {
-		/* Add unused budget from current period */
-		available_budget += expected_writes - dev->l2ad_dwpd_writes;
-	}
+	/*
+	 * If writes exceed budget, DWPD limit was likely lowered mid-period.
+	 * Return base daily rate to allow gradual recovery.
+	 */
+	if (dev->l2ad_dwpd_writes >= total_budget)
+		return (daily_budget / (24 * 3600));
 
-	return (available_budget);
+	return ((total_budget - dev->l2ad_dwpd_writes) / remaining_secs);
 }
 
 /*
