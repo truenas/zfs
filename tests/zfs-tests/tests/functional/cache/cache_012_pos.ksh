@@ -92,20 +92,60 @@ log_must zpool create -f $TESTPOOL $VDEV cache $VCACHE
 # Actually, this test relies on atime writes to force the L2 ARC discards
 log_must zfs set relatime=off $TESTPOOL
 
+log_note "=== Initial state ==="
+log_note "VCACHE_SZ=$VCACHE_SZ ($(($VCACHE_SZ/1024/1024))MB)"
+typeset arc_c_max=$(kstat arcstats.c_max)
+typeset persist_thresh=$(($arc_c_max / 2))
+log_note "arc_c_max=$arc_c_max ($(($arc_c_max/1024/1024))MB)"
+log_note "L2ARC_PERSIST_THRESHOLD=$persist_thresh ($(($persist_thresh/1024/1024))MB)"
+if [[ $VCACHE_SZ -lt $persist_thresh ]]; then
+	log_note "MODE: small device (VCACHE_SZ < threshold) -> DWPD-based"
+else
+	log_note "MODE: persistent device (VCACHE_SZ >= threshold)"
+fi
+log_note "l2_size=$(kstat arcstats.l2_size) l2_asize=$(kstat arcstats.l2_asize)"
+
 log_must fio $FIO_SCRIPTS/mkfiles.fio
 log_must fio $FIO_SCRIPTS/random_reads.fio
+
+log_note "=== After 10s fill ==="
+log_note "l2_size=$(kstat arcstats.l2_size) l2_asize=$(kstat arcstats.l2_asize)"
+log_note "l2_writes=$(kstat arcstats.l2_writes) l2_feeds=$(kstat arcstats.l2_feeds)"
+log_note "l2_evict_l2_eligible=$(kstat arcstats.l2_evict_l2_eligible)"
 
 log_must set_tunable32 L2ARC_WRITE_MAX $(( 256 * 1024 * 1024 ))
 export RUNTIME=1
 
+typeset -i iteration=0
+typeset -i max_iterations=120
+typeset -i writes_total_start=$(kstat arcstats.l2_writes)
+typeset -i feeds_start=$(kstat arcstats.l2_feeds)
 typeset do_once=true
 while $do_once || [[ $l2_size1 -le $l2_size2 ]]; do
+	iteration=$((iteration + 1))
+	if [[ $iteration -gt $max_iterations ]]; then
+		log_note "=== FAILED: Final state ==="
+		log_note "l2_size=$(kstat arcstats.l2_size) l2_asize=$(kstat arcstats.l2_asize)"
+		log_note "l2_writes=$(kstat arcstats.l2_writes) (delta=$(($(kstat arcstats.l2_writes)-writes_total_start)))"
+		log_note "l2_feeds=$(kstat arcstats.l2_feeds) (delta=$(($(kstat arcstats.l2_feeds)-feeds_start)))"
+		log_note "l2_write_bytes=$(kstat arcstats.l2_write_bytes)"
+		log_note "l2_evict_l2_eligible=$(kstat arcstats.l2_evict_l2_eligible)"
+		log_fail "Loop-around not detected after $max_iterations iterations"
+	fi
 	typeset l2_size1=$(kstat arcstats.l2_size)
+	typeset l2_writes1=$(kstat arcstats.l2_writes)
+	typeset l2_feeds1=$(kstat arcstats.l2_feeds)
 	log_must fio $FIO_SCRIPTS/random_reads.fio
 	typeset l2_size2=$(kstat arcstats.l2_size)
+	typeset l2_writes2=$(kstat arcstats.l2_writes)
+	typeset l2_feeds2=$(kstat arcstats.l2_feeds)
+	log_note "iter=$iteration l2_size:$l2_size1->$l2_size2 diff=$((l2_size1-l2_size2)) writes=$((l2_writes2-l2_writes1)) feeds=$((l2_feeds2-l2_feeds1))"
 	do_once=false
 done
 
+log_note "=== Loop-around detected at iteration $iteration ==="
+log_note "l2_writes=$(kstat arcstats.l2_writes) (delta=$(($(kstat arcstats.l2_writes)-writes_total_start)))"
+log_note "l2_feeds=$(kstat arcstats.l2_feeds) (delta=$(($(kstat arcstats.l2_feeds)-feeds_start)))"
 log_must zpool destroy $TESTPOOL
 
 log_pass "Looping around a cache device succeeds."
