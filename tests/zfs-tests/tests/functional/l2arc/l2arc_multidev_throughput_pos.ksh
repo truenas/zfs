@@ -30,7 +30,7 @@
 #	1. Disable DWPD rate limiting.
 #	2. Create pool with 5 cache devices.
 #	3. Write data and measure L2ARC throughput.
-#	4. Verify throughput scales with device count (~32MB/s per device).
+#	4. Verify throughput scales with device count (~16MB/s per device).
 #
 
 verify_runnable "global"
@@ -60,20 +60,21 @@ save_tunable ARC_MAX
 
 # Test parameters
 typeset num_devs=5
-typeset cache_sz=200
-typeset test_time=5
-typeset expected_rate=$((32 * 1024 * 1024))  # 32 MB/s per device
+typeset cache_sz=420
+typeset test_time=10
+typeset fill_mb=1500
+typeset expected_rate=$((16 * 1024 * 1024))  # 16 MB/s per device
 
 # Disable DWPD rate limiting
 log_must set_tunable32 L2ARC_DWPD_LIMIT 0
 
-# Use default L2ARC_WRITE_MAX (32MB/s per device)
+# Set L2ARC_WRITE_MAX to 16MB/s per device (80MB/s total with 5 devices)
 log_must set_tunable32 L2ARC_WRITE_MAX $expected_rate
 log_must set_tunable32 L2ARC_NOPREFETCH 0
 
-# Configure arc_max large enough
-log_must set_tunable64 ARC_MIN $((512 * 1024 * 1024))
+# Configure arc_max large enough to feed L2ARC
 log_must set_tunable64 ARC_MAX $((1024 * 1024 * 1024))
+log_must set_tunable64 ARC_MIN $((512 * 1024 * 1024))
 
 # Create cache devices (using letters e-i to follow cfg naming convention)
 typeset cache_devs=""
@@ -83,17 +84,35 @@ for letter in e f g h i; do
 	cache_devs="$cache_devs $dev"
 done
 
+log_must truncate -s 2G $VDEV
 log_must zpool create -f $TESTPOOL $VDEV cache $cache_devs
 
-# Generate data and measure L2ARC writes
+# Generate data in background
+dd if=/dev/urandom of=/$TESTPOOL/file1 bs=1M count=$fill_mb &
+typeset dd_pid=$!
+
+# Wait for L2ARC to start writing
+typeset l2_size=0
+for i in {1..30}; do
+	l2_size=$(kstat arcstats.l2_size)
+	[[ $l2_size -gt 0 ]] && break
+	sleep 1
+done
+if [[ $l2_size -eq 0 ]]; then
+	kill $dd_pid 2>/dev/null
+	log_fail "L2ARC did not start writing"
+fi
+
+# Measure L2ARC throughput over test window
 typeset start=$(kstat arcstats.l2_write_bytes)
-log_must dd if=/dev/urandom of=/$TESTPOOL/file1 bs=1M count=800
 log_must sleep $test_time
 typeset end=$(kstat arcstats.l2_write_bytes)
+kill $dd_pid 2>/dev/null
+wait $dd_pid 2>/dev/null
 
 typeset bytes=$((end - start))
 typeset bytes_mb=$((bytes / 1024 / 1024))
-# expected = 32MB/s * 5 devices * 5 seconds = 800MB
+# expected = 16MB/s * 5 devices * 10 seconds = 800MB
 typeset expected=$((expected_rate * num_devs * test_time))
 typeset expected_mb=$((expected / 1024 / 1024))
 

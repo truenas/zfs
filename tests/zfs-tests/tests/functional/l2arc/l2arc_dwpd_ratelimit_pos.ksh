@@ -28,11 +28,14 @@
 #
 # STRATEGY:
 #	1. Set DWPD limit before creating pool.
-#	2. Create pool with cache device (arc_max = 1.5 * cache_size).
-#	3. Fill L2ARC to complete first pass.
-#	4. Measure writes over test period.
-#	5. Repeat 1-4 for DWPD values 0, 100, 1000, 10000.
-#	6. Verify DWPD=0 > DWPD=10000 > DWPD=1000 > DWPD=100.
+#	2. Create pool with cache device (L2ARC >= arc_c_max * 2).
+#	3. Populate L2ARC to complete first pass - DWPD only limits writes
+#	   after first pass, so we must fill L2ARC first.
+#	4. Delete the file to free ARC and invalidate L2ARC entries.
+#	5. Write fresh data - now DWPD rate limiting controls refill rate.
+#	6. Measure L2ARC writes over test period.
+#	7. Repeat 1-6 for DWPD values 0, 10000, 5000, 1800.
+#	8. Verify DWPD=0 > DWPD=10000 > DWPD=5000 > DWPD=1800.
 #
 
 verify_runnable "global"
@@ -62,12 +65,12 @@ save_tunable ARC_MAX
 
 # Test parameters
 typeset cache_sz=900
-typeset fill_mb=1200
+typeset fill_mb=1500
 typeset test_time=15
 
-# Configure arc_max = 1.8 * cache_size for continuous L2ARC feed
-log_must set_tunable64 ARC_MIN $((cache_sz * 8 / 10 * 1024 * 1024))
-log_must set_tunable64 ARC_MAX $((cache_sz * 18 / 10 * 1024 * 1024))
+# Configure arc_max = 400MB so L2ARC (900MB) >= arc_c_max * 2 threshold
+log_must set_tunable64 ARC_MAX $((400 * 1024 * 1024))
+log_must set_tunable64 ARC_MIN $((200 * 1024 * 1024))
 log_must set_tunable32 L2ARC_NOPREFETCH 0
 log_must set_tunable32 L2ARC_WRITE_MAX $((200 * 1024 * 1024))
 
@@ -77,8 +80,10 @@ log_must truncate -s ${cache_sz}M $VDEV_CACHE
 
 typeset -A results
 
-# Test each DWPD value with fresh pool to measure first-pass fill
-for dwpd in 0 10000 1000 100; do
+# Test each DWPD value with fresh pool.
+# Minimum DWPD=1800 (18 DWPD) gives ~192KB/s (900MB*18/86400), enough to
+# write one block (128KB) + log overhead (64KB) without accumulating budget.
+for dwpd in 0 10000 5000 1800; do
 	log_must set_tunable32 L2ARC_DWPD_LIMIT $dwpd
 
 	if poolexists $TESTPOOL; then
@@ -86,17 +91,26 @@ for dwpd in 0 10000 1000 100; do
 	fi
 	log_must zpool create -f $TESTPOOL $VDEV cache $VDEV_CACHE
 
-	# Fill first pass and wait for L2ARC writes to stabilize
-	log_must dd if=/dev/urandom of=/$TESTPOOL/file1 bs=1M count=$fill_mb
-	log_must sleep 10
+	# Populate L2ARC in chunks to complete first pass
+	# (DWPD only limits after first pass)
+	log_must dd if=/dev/urandom of=/$TESTPOOL/fill1 bs=1M count=$((fill_mb/3))
+	log_must sleep 5
+	log_must dd if=/dev/urandom of=/$TESTPOOL/fill2 bs=1M count=$((fill_mb/3))
+	log_must sleep 5
+	log_must dd if=/dev/urandom of=/$TESTPOOL/fill3 bs=1M count=$((fill_mb/3))
+	log_must sleep 5
 
-	# Take baseline after first pass completes
+	# Delete files to free ARC and invalidate L2ARC entries
+	log_must rm /$TESTPOOL/fill1 /$TESTPOOL/fill2 /$TESTPOOL/fill3
+	log_must sync
+
+	# Take baseline - L2ARC now has space for fresh data
 	baseline=$(kstat arcstats.l2_write_bytes)
 	log_note "Baseline for DWPD=$dwpd: ${baseline}"
 
-	# Generate continuous workload to measure DWPD-limited L2ARC writes
-	# Write 2GB to ensure continuous L2ARC feed pressure throughout measurement
-	dd if=/dev/urandom of=/$TESTPOOL/file2 bs=1M count=2000 >/dev/null 2>&1 &
+	# Write fresh data - DWPD rate limiting now controls refill rate
+	# Write arc_max worth of data since that's what flows through ARC
+	dd if=/dev/urandom of=/$TESTPOOL/test bs=1M count=400 &
 	dd_pid=$!
 	log_must sleep $test_time
 	kill $dd_pid 2>/dev/null
@@ -112,11 +126,11 @@ done
 if [[ ${results[0]} -le ${results[10000]} ]]; then
 	log_fail "DWPD=0 (unlimited) should write more than DWPD=10000"
 fi
-if [[ ${results[10000]} -le ${results[1000]} ]]; then
-	log_fail "DWPD=10000 should write more than DWPD=1000"
+if [[ ${results[10000]} -le ${results[5000]} ]]; then
+	log_fail "DWPD=10000 should write more than DWPD=5000"
 fi
-if [[ ${results[1000]} -le ${results[100]} ]]; then
-	log_fail "DWPD=1000 should write more than DWPD=100"
+if [[ ${results[5000]} -le ${results[1800]} ]]; then
+	log_fail "DWPD=5000 should write more than DWPD=1800"
 fi
 
 log_must zpool destroy $TESTPOOL

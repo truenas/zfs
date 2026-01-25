@@ -135,7 +135,7 @@ The effective write rate is always bounded by
 .Sy l2arc_write_max .
 A value of 0 disables DWPD rate limiting entirely.
 DWPD limiting only applies after the initial fill pass completes and when
-total L2ARC capacity is at least half of arc_c_max.
+total L2ARC capacity is at least twice arc_c_max.
 .
 .It Sy l2arc_exclude_special Ns = Ns Sy 0 Ns | Ns 1 Pq int
 Controls whether buffers present on special vdevs are eligible for caching

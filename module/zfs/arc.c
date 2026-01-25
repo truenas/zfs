@@ -820,9 +820,8 @@ typedef struct arc_async_flush {
  * Level 2 ARC
  */
 
-#define	L2ARC_WRITE_SIZE	(32 * 1024 * 1024)	/* initial write max */
-#define	L2ARC_MIN_WRITE_SIZE	(1 * 1024 * 1024)	/* minimal write rate */
-#define	L2ARC_BURST_SIZE_MAX	(50 * 1024 * 1024)	/* max burst size */
+#define	L2ARC_WRITE_SIZE	(64 * 1024 * 1024)	/* initial write max */
+#define	L2ARC_BURST_SIZE_MAX	(64 * 1024 * 1024)	/* max burst size */
 #define	L2ARC_HEADROOM		8			/* num of writes */
 
 /*
@@ -835,12 +834,13 @@ typedef struct arc_async_flush {
 
 /*
  * Min L2ARC capacity to enable persistent markers, adaptive intervals, and
- * DWPD rate limiting. Markers reset after capacity/8 writes. With this
- * threshold (arc_c_max/2), minimum progress per cycle is:
- * (arc_c_max/2)/8 = arc_c_max/16 (~6% of ARC). Below this, marker
- * overhead isn't justified by the limited progress made.
+ * DWPD rate limiting. L2ARC must be at least twice arc_c_max to benefit from
+ * inclusive caching - smaller L2ARC would either cyclically overwrite itself
+ * (if L2ARC < ARC) or merely duplicate ARC contents (if L2ARC = ARC).
+ * With L2ARC >= 2*ARC, there's room for ARC duplication plus additional
+ * cached data.
  */
-#define	L2ARC_PERSIST_THRESHOLD	(arc_c_max / 2)
+#define	L2ARC_PERSIST_THRESHOLD	(arc_c_max * 2)
 
 /* L2ARC Performance Tunables */
 static uint64_t l2arc_write_max = L2ARC_WRITE_SIZE;	/* def max write size */
@@ -8521,9 +8521,9 @@ l2arc_write_size(l2arc_dev_t *dev, clock_t *interval)
 	if (write_rate > L2ARC_BURST_SIZE_MAX) {
 		/* Calculate interval to achieve desired rate with burst cap */
 		uint64_t feeds_per_sec =
-		    MAX(write_rate / L2ARC_BURST_SIZE_MAX, 1);
+		    MAX(DIV_ROUND_UP(write_rate, L2ARC_BURST_SIZE_MAX), 1);
 		*interval = hz / feeds_per_sec;
-		size = L2ARC_BURST_SIZE_MAX;
+		size = write_rate / feeds_per_sec;
 	} else {
 		*interval = hz; /* 1 second default */
 		size = write_rate;
@@ -9189,8 +9189,8 @@ l2arc_dwpd_rate_limit(l2arc_dev_t *dev)
 			if (dev->l2ad_dwpd_writes >= daily_budget)
 				dev->l2ad_dwpd_accumulated = 0;
 			else
-				dev->l2ad_dwpd_accumulated = MIN(daily_budget,
-				    daily_budget - dev->l2ad_dwpd_writes);
+				dev->l2ad_dwpd_accumulated =
+				    daily_budget - dev->l2ad_dwpd_writes;
 		}
 		dev->l2ad_dwpd_writes = 0;
 		dev->l2ad_dwpd_start = now;
@@ -9815,8 +9815,21 @@ next:
 	multilist_sublist_remove(mls, persistent_marker);
 	if (save_position &&
 	    multilist_link_active(&prev_hdr->b_l1hdr.b_arc_node)) {
-		multilist_sublist_insert_before(mls, prev_hdr,
-		    persistent_marker);
+		if (hdr != NULL) {
+			/*
+			 * Break: prev_hdr not written, retry next time.
+			 * Scan is TAIL->HEAD, so insert_after = retry.
+			 */
+			multilist_sublist_insert_after(mls, prev_hdr,
+			    persistent_marker);
+		} else {
+			/*
+			 * List end: prev_hdr processed, move on.
+			 * insert_before = skip prev_hdr next scan.
+			 */
+			multilist_sublist_insert_before(mls, prev_hdr,
+			    persistent_marker);
+		}
 	} else {
 		multilist_sublist_insert_tail(mls, persistent_marker);
 	}
@@ -10123,16 +10136,6 @@ l2arc_feed_thread(void *arg)
 		ASSERT3P(spa, !=, NULL);
 		if (!spa_config_tryenter(spa, SCL_L2ARC, dev, RW_READER))
 			continue;
-
-		/*
-		 * If the pool is read-only then force the feed thread to
-		 * sleep a little longer.
-		 */
-		if (!spa_writeable(spa)) {
-			next = ddi_get_lbolt() + 5 * l2arc_feed_secs * hz;
-			spa_config_exit(spa, SCL_L2ARC, dev);
-			continue;
-		}
 
 		/*
 		 * Avoid contributing to memory pressure.

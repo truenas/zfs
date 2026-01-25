@@ -28,11 +28,11 @@
 #
 # STRATEGY:
 #	1. Set DWPD limit before creating pool.
-#	2. Create pool with 900MB cache device.
-#	3. Fill L2ARC and wait for first pass to complete.
+#	2. Create pool with cache device (L2ARC >= arc_c_max * 2).
+#	3. Fill L2ARC with staged writes and wait for first pass to complete.
 #	4. Measure DWPD-limited writes with continuous workload.
 #	5. Export and import pool.
-#	6. Wait for rebuild, then fill L2ARC and wait for first pass to complete.
+#	6. Wait for rebuild, then fill L2ARC with staged writes.
 #	7. Measure DWPD-limited writes again.
 #	8. Verify rate limiting still works after import (non-zero writes).
 #
@@ -66,28 +66,32 @@ save_tunable ARC_MAX
 
 # Test parameters
 typeset cache_sz=900
-typeset fill_mb=900
+typeset fill_mb=1500
 typeset test_time=15
 
 # Set DWPD before pool creation (10000 = 100 DWPD)
 log_must set_tunable32 L2ARC_DWPD_LIMIT 10000
 log_must set_tunable32 L2ARC_REBUILD_BLOCKS_MIN_L2SIZE 0
 
-# Configure arc_max = 1.8 * cache_size for continuous L2ARC feed
-log_must set_tunable64 ARC_MIN $((cache_sz * 8 / 10 * 1024 * 1024))
-log_must set_tunable64 ARC_MAX $((cache_sz * 18 / 10 * 1024 * 1024))
+# Configure arc_max = 400MB so L2ARC (900MB) >= arc_c_max * 2 threshold
+log_must set_tunable64 ARC_MAX $((400 * 1024 * 1024))
+log_must set_tunable64 ARC_MIN $((200 * 1024 * 1024))
 log_must set_tunable32 L2ARC_NOPREFETCH 0
 log_must set_tunable32 L2ARC_WRITE_MAX $((200 * 1024 * 1024))
 
 # Create larger main vdev to accommodate fill data
-log_must truncate -s 5G $VDEV
+log_must truncate -s 8G $VDEV
 log_must truncate -s ${cache_sz}M $VDEV_CACHE
 
 log_must zpool create -f $TESTPOOL $VDEV cache $VDEV_CACHE
 
-# Fill first pass and wait for L2ARC writes to complete
-log_must dd if=/dev/urandom of=/$TESTPOOL/file1 bs=1M count=$fill_mb
-arcstat_quiescence_noecho l2_size
+# Staged fills to allow L2ARC to drain between writes
+log_must dd if=/dev/urandom of=/$TESTPOOL/file1a bs=1M count=$((fill_mb/3))
+log_must sleep 5
+log_must dd if=/dev/urandom of=/$TESTPOOL/file1b bs=1M count=$((fill_mb/3))
+log_must sleep 5
+log_must dd if=/dev/urandom of=/$TESTPOOL/file1c bs=1M count=$((fill_mb/3))
+log_must sleep 5
 
 # Verify L2ARC is populated before export
 typeset l2_size_before=$(kstat arcstats.l2_size)
@@ -129,9 +133,13 @@ if [[ $l2_size_after -eq 0 ]]; then
 	log_fail "L2ARC not populated after import"
 fi
 
-# Fill first pass again after import and wait for L2ARC writes to complete
-log_must dd if=/dev/urandom of=/$TESTPOOL/file3 bs=1M count=$fill_mb
-log_must sleep 10
+# Staged fills again after import
+log_must dd if=/dev/urandom of=/$TESTPOOL/file3a bs=1M count=$((fill_mb/3))
+log_must sleep 5
+log_must dd if=/dev/urandom of=/$TESTPOOL/file3b bs=1M count=$((fill_mb/3))
+log_must sleep 5
+log_must dd if=/dev/urandom of=/$TESTPOOL/file3c bs=1M count=$((fill_mb/3))
+log_must sleep 5
 
 # Verify L2ARC is still populated after refill
 l2_size=$(kstat arcstats.l2_size)
