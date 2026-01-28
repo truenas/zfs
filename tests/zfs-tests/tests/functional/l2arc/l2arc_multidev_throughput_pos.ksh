@@ -60,7 +60,7 @@ save_tunable ARC_MAX
 
 # Test parameters
 typeset num_devs=4
-typeset cache_sz=420
+typeset cache_sz=520
 typeset test_time=10
 typeset fill_mb=1500
 typeset expected_rate=$((16 * 1024 * 1024))  # 16 MB/s per device
