@@ -2167,6 +2167,9 @@ spa_sync_time_logger(spa_t *spa, uint64_t txg)
 	if (curtime < spa->spa_last_flush_txg_time + spa_flush_txg_time) {
 		return;
 	}
+	if (txg > spa_final_dirty_txg(spa)) {
+		return;
+	}
 	spa->spa_last_flush_txg_time = curtime;
 
 	tx = dmu_tx_create_assigned(spa_get_dsl(spa), txg);
@@ -10449,7 +10452,7 @@ spa_sync(spa_t *spa, uint64_t txg)
 	dsl_pool_t *dp = spa->spa_dsl_pool;
 	dmu_tx_t *tx = dmu_tx_create_assigned(dp, txg);
 
-	spa->spa_sync_starttime = gethrtime();
+	spa->spa_sync_starttime = getlrtime();
 
 	taskq_cancel_id(system_delay_taskq, spa->spa_deadman_tqid, B_TRUE);
 	spa->spa_deadman_tqid = taskq_dispatch_delay(system_delay_taskq,
