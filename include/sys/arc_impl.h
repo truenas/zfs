@@ -456,6 +456,12 @@ typedef struct l2arc_dev {
 	boolean_t		l2ad_thread_exit;	/* signal thread exit */
 	kmutex_t		l2ad_feed_thr_lock;	/* thread sleep/wake */
 	kcondvar_t		l2ad_feed_cv;		/* thread wakeup cv */
+	/*
+	 * Balanced cycle scheduling for data/metadata feeding. Each cycle
+	 * rotates the primary pass through all four types so every pass gets
+	 * equal priority over time.
+	 */
+	uint_t			l2ad_sched_pass;	/* next primary pass */
 } l2arc_dev_t;
 
 /*
