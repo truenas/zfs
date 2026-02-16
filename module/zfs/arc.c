@@ -9938,13 +9938,13 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	/*
 	 * Copy buffers for L2ARC writing.
 	 */
-	int pass_order[L2ARC_FEED_TYPES];
-	for (int i = 0; i < L2ARC_FEED_TYPES; i++)
-		pass_order[i] = (dev->l2ad_sched_pass + i) % L2ARC_FEED_TYPES;
-	dev->l2ad_sched_pass = (dev->l2ad_sched_pass + 1) % L2ARC_FEED_TYPES;
-
-	for (int pidx = 0; pidx < L2ARC_FEED_TYPES; pidx++) {
-		int pass = pass_order[pidx];
+	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
+		/*
+		 * pass == 0: MFU meta
+		 * pass == 1: MRU meta
+		 * pass == 2: MFU data
+		 * pass == 3: MRU data
+		 */
 		if (l2arc_mfuonly == 1) {
 			if (pass == 1 || pass == 3)
 				continue;
