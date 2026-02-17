@@ -46,6 +46,18 @@ extern "C" {
  * and each of the states has two types: data and metadata.
  */
 #define	L2ARC_FEED_TYPES	4
+#define	L2ARC_MFU_META		0
+#define	L2ARC_MRU_META		1
+#define	L2ARC_MFU_DATA		2
+#define	L2ARC_MRU_DATA		3
+
+/*
+ * Extended headroom state for a single L2ARC pass (metadata only).
+ * Tracks cumulative scan depth to control marker advancement.
+ */
+typedef struct l2arc_ext_headroom {
+	uint64_t	ext_scanned;	/* bytes scanned since marker reset */
+} l2arc_ext_headroom_t;
 
 /*
  * L2ARC state and statistics for persistent marker management.
@@ -60,6 +72,12 @@ typedef struct l2arc_info {
 	 */
 	boolean_t	*l2arc_sublist_busy[L2ARC_FEED_TYPES];
 	kmutex_t	l2arc_sublist_lock;	/* protects busy flags */
+	/*
+	 * Extended headroom for metadata passes (MFU meta, MRU meta).
+	 * Limits how far persistent markers advance from tail before
+	 * resetting, based on % of state size.
+	 */
+	l2arc_ext_headroom_t	l2arc_ext[L2ARC_FEED_TYPES];
 } l2arc_info_t;
 
 /*

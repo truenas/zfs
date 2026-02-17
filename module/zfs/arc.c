@@ -9081,6 +9081,11 @@ l2arc_pool_markers_init(spa_t *spa)
 			    spa->spa_l2arc_info.l2arc_markers[pass][i]);
 			multilist_sublist_unlock(mls);
 		}
+
+		/* Initialize extended headroom for metadata passes */
+		if (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) {
+			spa->spa_l2arc_info.l2arc_ext[pass].ext_scanned = 0;
+		}
 	}
 }
 
