@@ -957,6 +957,12 @@ int l2arc_exclude_special = 0;
 static int l2arc_mfuonly = 0;
 
 /*
+ * Percentage of metadata state size to use as extended headroom depth cap.
+ * Limits how far persistent markers advance from tail before resetting.
+ */
+#define	L2ARC_EXT_HEADROOM_PCT	25
+
+/*
  * L2ARC TRIM
  * l2arc_trim_ahead : A ZFS module parameter that controls how much ahead of
  * 		the current write size (l2arc_write_max) we should TRIM if we
@@ -9085,6 +9091,8 @@ l2arc_pool_markers_init(spa_t *spa)
 		/* Initialize extended headroom for metadata passes */
 		if (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) {
 			spa->spa_l2arc_info.l2arc_ext[pass].ext_scanned = 0;
+			spa->spa_l2arc_info.l2arc_ext[pass].ext_reset_pending =
+			    B_FALSE;
 		}
 	}
 }
@@ -9850,6 +9858,65 @@ l2arc_blk_fetch_done(zio_t *zio)
 }
 
 /*
+ * Return the total size of the ARC state corresponding to the given
+ * L2ARC pass number (0..3).
+ */
+static uint64_t
+l2arc_get_state_size(int pass)
+{
+	switch (pass) {
+	case L2ARC_MFU_META:
+		return (zfs_refcount_count(
+		    &arc_mfu->arcs_size[ARC_BUFC_METADATA]));
+	case L2ARC_MRU_META:
+		return (zfs_refcount_count(
+		    &arc_mru->arcs_size[ARC_BUFC_METADATA]));
+	case L2ARC_MFU_DATA:
+		return (zfs_refcount_count(
+		    &arc_mfu->arcs_size[ARC_BUFC_DATA]));
+	case L2ARC_MRU_DATA:
+		return (zfs_refcount_count(
+		    &arc_mru->arcs_size[ARC_BUFC_DATA]));
+	default:
+		return (0);
+	}
+}
+
+/*
+ * Reset L2ARC markers for a single pass to tail position.
+ * Used by extended headroom to reset metadata markers independently.
+ */
+static void
+l2arc_reset_pass_markers(spa_t *spa, int pass)
+{
+	ASSERT(spa->spa_l2arc_info.l2arc_markers != NULL);
+	ASSERT(MUTEX_HELD(&spa->spa_l2arc_info.l2arc_sublist_lock));
+
+	if (spa->spa_l2arc_info.l2arc_markers[pass] == NULL)
+		return;
+
+	multilist_t *ml = l2arc_get_list(pass);
+	int num_sublists = multilist_get_num_sublists(ml);
+
+	for (int i = 0; i < num_sublists; i++) {
+		ASSERT3P(spa->spa_l2arc_info.l2arc_markers[pass][i],
+		    !=, NULL);
+		multilist_sublist_t *mls =
+		    multilist_sublist_lock_idx(ml, i);
+
+		ASSERT(multilist_link_active(&spa->spa_l2arc_info.
+		    l2arc_markers[pass][i]->b_l1hdr.b_arc_node));
+		multilist_sublist_remove(mls, spa->spa_l2arc_info.
+		    l2arc_markers[pass][i]);
+
+		multilist_sublist_insert_tail(mls,
+		    spa->spa_l2arc_info.l2arc_markers[pass][i]);
+
+		multilist_sublist_unlock(mls);
+	}
+}
+
+/*
  * Reset all L2ARC markers to tail position for the given spa.
  */
 static void
@@ -9937,6 +10004,13 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	if (save_position && spa->spa_l2arc_info.l2arc_total_writes >=
 	    spa->spa_l2arc_info.l2arc_smallest_capacity / 8) {
 		l2arc_reset_all_markers(spa);
+		/* Reset extended headroom for metadata passes */
+		spa->spa_l2arc_info.l2arc_ext[L2ARC_MFU_META].ext_scanned = 0;
+		spa->spa_l2arc_info.l2arc_ext[L2ARC_MRU_META].ext_scanned = 0;
+		spa->spa_l2arc_info.l2arc_ext[L2ARC_MFU_META].ext_reset_pending =
+		    B_FALSE;
+		spa->spa_l2arc_info.l2arc_ext[L2ARC_MRU_META].ext_reset_pending =
+		    B_FALSE;
 	}
 	mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
 
@@ -9962,12 +10036,28 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		if (zfs_compressed_arc_enabled)
 			headroom = (headroom * l2arc_headroom_boost) / 100;
 
+		/*
+		 * Reduce scan budget for metadata with persistent markers.
+		 * Metadata scans incrementally, needs less headroom per cycle.
+		 */
+		if (save_position &&
+		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META))
+			headroom = headroom / 4;
+
 		multilist_t *ml = l2arc_get_list(pass);
 		ASSERT3P(ml, !=, NULL);
 		int num_sublists = multilist_get_num_sublists(ml);
-		int current_sublist = multilist_get_random_index(ml);
 		uint64_t consumed_headroom = 0;
 
+		/*
+		 * Skip metadata passes if marker reset is pending.
+		 * Jump to reset check to see if we can complete the reset.
+		 */
+		if (save_position &&
+		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) &&
+		    spa->spa_l2arc_info.l2arc_ext[pass].ext_reset_pending)
+			goto check_extended_headroom;
+		int current_sublist = multilist_get_random_index(ml);
 		int processed_sublists = 0;
 		while (processed_sublists < num_sublists && !full) {
 			uint64_t sublist_headroom;
@@ -10019,6 +10109,64 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 
 			current_sublist = (current_sublist + 1) % num_sublists;
 			processed_sublists++;
+		}
+
+check_extended_headroom:
+		/*
+		 * Extended headroom: track cumulative scan depth for
+		 * metadata passes and reset markers when depth cap is reached.
+		 */
+		if (save_position &&
+		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META)) {
+			l2arc_ext_headroom_t *ext =
+			    &spa->spa_l2arc_info.l2arc_ext[pass];
+
+			mutex_enter(&spa->spa_l2arc_info.l2arc_sublist_lock);
+
+			ext->ext_scanned += consumed_headroom;
+
+			/*
+			 * Check if scan depth exceeds depth cap.
+			 * Cap is the larger of: (1) % of state size, or
+			 * (2) minimum of 2 cycles worth of scanning.
+			 * If exceeded, request marker reset when pass becomes idle.
+			 */
+			uint64_t state_sz = l2arc_get_state_size(pass);
+			uint64_t pct_cap = state_sz * L2ARC_EXT_HEADROOM_PCT / 100;
+			uint64_t min_cap = headroom * 2;
+			uint64_t depth_cap = MAX(pct_cap, min_cap);
+
+			if (ext->ext_scanned >= depth_cap) {
+				ext->ext_reset_pending = B_TRUE;
+
+				/*
+				 * Check if all sublists are idle for this pass.
+				 * If so, safe to reset markers immediately.
+				 */
+				boolean_t pass_is_idle = B_TRUE;
+
+				for (int i = 0; i < num_sublists; i++) {
+					if (spa->spa_l2arc_info.
+					    l2arc_sublist_busy[pass][i]) {
+						pass_is_idle = B_FALSE;
+						break;
+					}
+				}
+
+				if (pass_is_idle) {
+					l2arc_reset_pass_markers(spa, pass);
+					ext->ext_scanned = 0;
+					ext->ext_reset_pending = B_FALSE;
+				}
+			} else if (ext->ext_reset_pending) {
+				/*
+				 * State grew, depth cap now larger than
+				 * scanned amount. Resume scanning.
+				 */
+				ext->ext_reset_pending = B_FALSE;
+			}
+
+			mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
 		}
 
 		if (full == B_TRUE)

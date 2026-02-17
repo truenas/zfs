@@ -57,6 +57,7 @@ extern "C" {
  */
 typedef struct l2arc_ext_headroom {
 	uint64_t	ext_scanned;	/* bytes scanned since marker reset */
+	boolean_t	ext_reset_pending; /* reset requested, block new scans */
 } l2arc_ext_headroom_t;
 
 /*
