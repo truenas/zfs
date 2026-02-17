@@ -970,6 +970,14 @@ static int l2arc_mfuonly = 0;
 #define	L2ARC_EXT_HEADROOM_PCT	25
 
 /*
+ * Write fairness threshold. When metadata monopolizes the write budget
+ * for this many consecutive cycles while data gets nothing, skip metadata
+ * passes to let data run. Counter decrements when data gets a turn,
+ * creating roughly equal opportunity over time (floor at 0).
+ */
+#define	L2ARC_WRITE_FAIRNESS_CYCLES	10
+
+/*
  * L2ARC TRIM
  * l2arc_trim_ahead : A ZFS module parameter that controls how much ahead of
  * 		the current write size (l2arc_write_max) we should TRIM if we
@@ -10074,6 +10082,15 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) &&
 		    spa->spa_l2arc_info.l2arc_ext[pass].ext_reset_pending)
 			goto check_extended_headroom;
+
+		/*
+		 * Skip metadata if write budget has been monopolized.
+		 */
+		if (save_position &&
+		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) &&
+		    dev->l2ad_meta_writes >= L2ARC_WRITE_FAIRNESS_CYCLES)
+			continue;
+
 		int current_sublist = multilist_get_random_index(ml);
 		int processed_sublists = 0;
 		while (processed_sublists < num_sublists && !full) {
@@ -10126,6 +10143,19 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 
 			current_sublist = (current_sublist + 1) % num_sublists;
 			processed_sublists++;
+		}
+
+		/*
+		 * Adjust write fairness balance. Only increment when
+		 * metadata actually fills the write budget (full=TRUE),
+		 * preventing data from running. Data passes decrement.
+		 */
+		if (save_position) {
+			if (pass <= L2ARC_MRU_META && full)
+				dev->l2ad_meta_writes++;
+			else if (pass >= L2ARC_MFU_DATA &&
+			    dev->l2ad_meta_writes > 0)
+				dev->l2ad_meta_writes--;
 		}
 
 check_extended_headroom:
@@ -10197,6 +10227,13 @@ check_extended_headroom:
 		if (full == B_TRUE)
 			break;
 	}
+
+	/*
+	 * If nothing was written at all, reset fairness counter.
+	 * No point skipping metadata if data has nothing either.
+	 */
+	if (write_asize == 0)
+		dev->l2ad_meta_writes = 0;
 
 	/* No buffers selected for writing? */
 	if (pio == NULL) {
