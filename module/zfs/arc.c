@@ -9098,6 +9098,8 @@ l2arc_pool_markers_init(spa_t *spa)
 		    arc_state_alloc_markers(num_sublists);
 		spa->spa_l2arc_info.l2arc_sublist_busy[pass] =
 		    kmem_zalloc(num_sublists * sizeof (boolean_t), KM_SLEEP);
+		spa->spa_l2arc_info.l2arc_sublist_reset[pass] =
+		    kmem_zalloc(num_sublists * sizeof (boolean_t), KM_SLEEP);
 
 		for (int i = 0; i < num_sublists; i++) {
 			multilist_sublist_t *mls =
@@ -9110,8 +9112,6 @@ l2arc_pool_markers_init(spa_t *spa)
 		/* Initialize extended headroom for metadata passes */
 		if (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) {
 			spa->spa_l2arc_info.l2arc_ext[pass].ext_scanned = 0;
-			spa->spa_l2arc_info.l2arc_ext[pass].ext_reset_pending =
-			    B_FALSE;
 			spa->spa_l2arc_info.l2arc_ext[pass].ext_evict_base =
 			    l2arc_evict_acc[pass];
 		}
@@ -9151,12 +9151,18 @@ l2arc_pool_markers_fini(spa_t *spa)
 		    num_sublists);
 		spa->spa_l2arc_info.l2arc_markers[pass] = NULL;
 
-		/* Free sublist busy flags for this pass */
+		/* Free sublist busy and reset flags for this pass */
 		ASSERT3P(spa->spa_l2arc_info.l2arc_sublist_busy[pass], !=,
 		    NULL);
 		kmem_free(spa->spa_l2arc_info.l2arc_sublist_busy[pass],
 		    num_sublists * sizeof (boolean_t));
 		spa->spa_l2arc_info.l2arc_sublist_busy[pass] = NULL;
+
+		ASSERT3P(spa->spa_l2arc_info.l2arc_sublist_reset[pass], !=,
+		    NULL);
+		kmem_free(spa->spa_l2arc_info.l2arc_sublist_reset[pass],
+		    num_sublists * sizeof (boolean_t));
+		spa->spa_l2arc_info.l2arc_sublist_reset[pass] = NULL;
 	}
 
 	mutex_destroy(&spa->spa_l2arc_info.l2arc_sublist_lock);
@@ -9642,6 +9648,19 @@ l2arc_write_sublist(spa_t *spa, l2arc_dev_t *dev, int pass, int sublist_idx,
 	persistent_marker = spa->spa_l2arc_info.
 	    l2arc_markers[pass][sublist_idx];
 
+	/*
+	 * Check if this sublist's marker was flagged for reset to tail.
+	 * This handles depth cap resets and global resets without needing
+	 * to coordinate with actively-scanning threads.
+	 */
+	if (save_position &&
+	    spa->spa_l2arc_info.l2arc_sublist_reset[pass][sublist_idx]) {
+		multilist_sublist_remove(mls, persistent_marker);
+		multilist_sublist_insert_tail(mls, persistent_marker);
+		spa->spa_l2arc_info.l2arc_sublist_reset[pass][sublist_idx] =
+		    B_FALSE;
+	}
+
 	if (save_position && persistent_marker == multilist_sublist_head(mls)) {
 		multilist_sublist_unlock(mls);
 		return (B_FALSE);
@@ -9832,14 +9851,24 @@ next:
 	}
 
 	/*
-	 * Position persistent marker for next iteration. In case of
-	 * save_position, validate that prev_hdr still belongs to the current
-	 * sublist. The sublist lock is dropped during L2ARC write I/O, allowing
-	 * ARC eviction to potentially free prev_hdr. If freed, we can't do much
-	 * except to reset the marker.
+	 * Position persistent marker for next iteration.
+	 *
+	 * If a reset was flagged during our scan (sublist lock was dropped
+	 * for I/O, allowing another thread to set the flag), honor it by
+	 * moving the marker to tail instead of advancing.
+	 *
+	 * Otherwise, validate that prev_hdr still belongs to the current
+	 * sublist.  The sublist lock is dropped during L2ARC write I/O,
+	 * allowing ARC eviction to potentially free prev_hdr.  If freed,
+	 * we can't do much except to reset the marker.
 	 */
 	multilist_sublist_remove(mls, persistent_marker);
 	if (save_position &&
+	    spa->spa_l2arc_info.l2arc_sublist_reset[pass][sublist_idx]) {
+		multilist_sublist_insert_tail(mls, persistent_marker);
+		spa->spa_l2arc_info.l2arc_sublist_reset[pass][sublist_idx] =
+		    B_FALSE;
+	} else if (save_position &&
 	    multilist_link_active(&prev_hdr->b_l1hdr.b_arc_node)) {
 		if (hdr != NULL) {
 			/*
@@ -9904,74 +9933,33 @@ l2arc_get_state_size(int pass)
 }
 
 /*
- * Reset L2ARC markers for a single pass to tail position.
- * Used by extended headroom to reset metadata markers independently.
+ * Flag all sublists for a single pass for lazy marker reset to tail.
+ * Each sublist's marker will be reset when next visited by a feed thread.
  */
 static void
-l2arc_reset_pass_markers(spa_t *spa, int pass)
+l2arc_flag_pass_reset(spa_t *spa, int pass)
 {
-	ASSERT(spa->spa_l2arc_info.l2arc_markers != NULL);
-	ASSERT(MUTEX_HELD(&spa->spa_l2arc_info.l2arc_sublist_lock));
-
 	if (spa->spa_l2arc_info.l2arc_markers[pass] == NULL)
 		return;
 
 	multilist_t *ml = l2arc_get_list(pass);
 	int num_sublists = multilist_get_num_sublists(ml);
 
-	for (int i = 0; i < num_sublists; i++) {
-		ASSERT3P(spa->spa_l2arc_info.l2arc_markers[pass][i],
-		    !=, NULL);
-		multilist_sublist_t *mls =
-		    multilist_sublist_lock_idx(ml, i);
-
-		ASSERT(multilist_link_active(&spa->spa_l2arc_info.
-		    l2arc_markers[pass][i]->b_l1hdr.b_arc_node));
-		multilist_sublist_remove(mls, spa->spa_l2arc_info.
-		    l2arc_markers[pass][i]);
-
-		multilist_sublist_insert_tail(mls,
-		    spa->spa_l2arc_info.l2arc_markers[pass][i]);
-
-		multilist_sublist_unlock(mls);
-	}
+	for (int i = 0; i < num_sublists; i++)
+		spa->spa_l2arc_info.l2arc_sublist_reset[pass][i] = B_TRUE;
 }
 
 /*
- * Reset all L2ARC markers to tail position for the given spa.
+ * Flag all L2ARC markers for lazy reset to tail for the given spa.
+ * Each sublist's marker will be reset when next visited by a feed thread.
  */
 static void
 l2arc_reset_all_markers(spa_t *spa)
 {
 	ASSERT(spa->spa_l2arc_info.l2arc_markers != NULL);
-	ASSERT(MUTEX_HELD(&spa->spa_l2arc_info.l2arc_sublist_lock));
 
-	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
-		if (spa->spa_l2arc_info.l2arc_markers[pass] == NULL)
-			continue;
-
-		multilist_t *ml = l2arc_get_list(pass);
-		int num_sublists = multilist_get_num_sublists(ml);
-
-		for (int i = 0; i < num_sublists; i++) {
-			ASSERT3P(spa->spa_l2arc_info.l2arc_markers[pass][i],
-			    !=, NULL);
-			multilist_sublist_t *mls =
-			    multilist_sublist_lock_idx(ml, i);
-
-			/* Remove from current position */
-			ASSERT(multilist_link_active(&spa->spa_l2arc_info.
-			    l2arc_markers[pass][i]->b_l1hdr.b_arc_node));
-			multilist_sublist_remove(mls, spa->spa_l2arc_info.
-			    l2arc_markers[pass][i]);
-
-			/* Insert at tail (like initialization) */
-			multilist_sublist_insert_tail(mls,
-			    spa->spa_l2arc_info.l2arc_markers[pass][i]);
-
-			multilist_sublist_unlock(mls);
-		}
-	}
+	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++)
+		l2arc_flag_pass_reset(spa, pass);
 
 	/* Reset write counter */
 	spa->spa_l2arc_info.l2arc_total_writes = 0;
@@ -10028,10 +10016,6 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		/* Reset extended headroom for metadata passes */
 		spa->spa_l2arc_info.l2arc_ext[L2ARC_MFU_META].ext_scanned = 0;
 		spa->spa_l2arc_info.l2arc_ext[L2ARC_MRU_META].ext_scanned = 0;
-		spa->spa_l2arc_info.l2arc_ext[L2ARC_MFU_META].ext_reset_pending =
-		    B_FALSE;
-		spa->spa_l2arc_info.l2arc_ext[L2ARC_MRU_META].ext_reset_pending =
-		    B_FALSE;
 		spa->spa_l2arc_info.l2arc_ext[L2ARC_MFU_META].ext_evict_base =
 		    l2arc_evict_acc[L2ARC_MFU_META];
 		spa->spa_l2arc_info.l2arc_ext[L2ARC_MRU_META].ext_evict_base =
@@ -10073,15 +10057,6 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		ASSERT3P(ml, !=, NULL);
 		int num_sublists = multilist_get_num_sublists(ml);
 		uint64_t consumed_headroom = 0;
-
-		/*
-		 * Skip metadata passes if marker reset is pending.
-		 * Jump to reset check to see if we can complete the reset.
-		 */
-		if (save_position &&
-		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) &&
-		    spa->spa_l2arc_info.l2arc_ext[pass].ext_reset_pending)
-			goto check_extended_headroom;
 
 		/*
 		 * Skip metadata if write budget has been monopolized.
@@ -10158,10 +10133,12 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 				dev->l2ad_meta_writes--;
 		}
 
-check_extended_headroom:
 		/*
 		 * Extended headroom: track cumulative scan depth for
-		 * metadata passes and reset markers when depth cap is reached.
+		 * metadata passes and reset markers when depth cap is
+		 * reached.  Flag sublists for lazy reset rather than
+		 * moving markers directly, so actively-scanned sublists
+		 * pick up the reset when they finish.
 		 */
 		if (save_position &&
 		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META)) {
@@ -10174,14 +10151,15 @@ check_extended_headroom:
 
 			/*
 			 * Check if scan depth exceeds depth cap.
-			 * Base cap is the larger of: (1) % of state size, or
-			 * (2) minimum of 2 cycles worth of scanning.
-			 * Eviction credit extends the cap under churn (1:1),
-			 * limited to base_cap so total depth <= 2x base
-			 * (~50% of state when pct_cap dominates).
+			 * Base cap is the larger of: (1) % of state size,
+			 * or (2) minimum of 2 cycles worth of scanning.
+			 * Eviction credit extends the cap under churn
+			 * (1:1), limited to base_cap so total depth <=
+			 * 2x base (~50% of state when pct_cap dominates).
 			 */
 			uint64_t state_sz = l2arc_get_state_size(pass);
-			uint64_t pct_cap = state_sz * L2ARC_EXT_HEADROOM_PCT / 100;
+			uint64_t pct_cap =
+			    state_sz * L2ARC_EXT_HEADROOM_PCT / 100;
 			uint64_t min_cap = headroom * 2;
 			uint64_t base_cap = MAX(pct_cap, min_cap);
 			uint64_t evict_credit =
@@ -10190,35 +10168,10 @@ check_extended_headroom:
 			uint64_t depth_cap = base_cap + extra;
 
 			if (ext->ext_scanned >= depth_cap) {
-				ext->ext_reset_pending = B_TRUE;
-
-				/*
-				 * Check if all sublists are idle for this pass.
-				 * If so, safe to reset markers immediately.
-				 */
-				boolean_t pass_is_idle = B_TRUE;
-
-				for (int i = 0; i < num_sublists; i++) {
-					if (spa->spa_l2arc_info.
-					    l2arc_sublist_busy[pass][i]) {
-						pass_is_idle = B_FALSE;
-						break;
-					}
-				}
-
-				if (pass_is_idle) {
-					l2arc_reset_pass_markers(spa, pass);
-					ext->ext_scanned = 0;
-					ext->ext_reset_pending = B_FALSE;
-					ext->ext_evict_base =
-					    l2arc_evict_acc[pass];
-				}
-			} else if (ext->ext_reset_pending) {
-				/*
-				 * State grew, depth cap now larger than
-				 * scanned amount. Resume scanning.
-				 */
-				ext->ext_reset_pending = B_FALSE;
+				l2arc_flag_pass_reset(spa, pass);
+				ext->ext_scanned = 0;
+				ext->ext_evict_base =
+				    l2arc_evict_acc[pass];
 			}
 
 			mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
