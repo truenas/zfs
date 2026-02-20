@@ -227,6 +227,13 @@ to enable caching/reading prefetches to/from L2ARC.
 .It Sy l2arc_norw Ns = Ns Sy 0 Ns | Ns 1 Pq int
 No reads during writes.
 .
+.It Sy l2arc_write_fairness Ns = Ns Sy 2 Pq u64
+How many consecutive write cycles metadata may fill before data gets
+a full write cycle.
+The default of 2 gives metadata roughly 67% and data 33% of L2ARC
+write bandwidth under sustained load.
+Higher values favor metadata; set to 0 to let metadata always go first.
+.
 .It Sy l2arc_write_max Ns = Ns Sy 33554432 Ns B Po 32 MiB Pc Pq u64
 Maximum write rate in bytes per second for each L2ARC device.
 Used directly during initial fill, when DWPD limiting is disabled,

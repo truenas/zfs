@@ -964,11 +964,12 @@ static int l2arc_mfuonly = 0;
 
 /*
  * Write fairness threshold. When metadata monopolizes the write budget
- * for this many consecutive cycles while data gets nothing, skip metadata
- * passes to let data run. Counter decrements when data gets a turn,
- * creating roughly equal opportunity over time (floor at 0).
+ * for this many consecutive passes while data gets nothing, skip metadata
+ * passes to let data run for one full cycle, then reset the counter.
+ * With N=2, the steady-state pattern under sustained monopolization is
+ * 2 metadata cycles followed by 1 data cycle (67%/33% split).
  */
-#define	L2ARC_WRITE_FAIRNESS_CYCLES	10
+static uint64_t l2arc_write_fairness = 2;
 
 /*
  * L2ARC TRIM
@@ -10009,6 +10010,12 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	/*
 	 * Copy buffers for L2ARC writing.
 	 */
+	boolean_t skip_meta = (save_position &&
+	    l2arc_write_fairness > 0 &&
+	    dev->l2ad_meta_writes >= l2arc_write_fairness);
+	if (skip_meta)
+		dev->l2ad_meta_writes = 0;
+
 	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
 		/*
 		 * pass == 0: MFU meta
@@ -10033,12 +10040,7 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		int num_sublists = multilist_get_num_sublists(ml);
 		uint64_t consumed_headroom = 0;
 
-		/*
-		 * Skip metadata if write budget has been monopolized.
-		 */
-		if (save_position &&
-		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) &&
-		    dev->l2ad_meta_writes >= L2ARC_WRITE_FAIRNESS_CYCLES)
+		if (skip_meta && pass <= L2ARC_MRU_META)
 			continue;
 
 		int current_sublist = multilist_get_random_index(ml);
@@ -10096,17 +10098,12 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		}
 
 		/*
-		 * Adjust write fairness balance. Only increment when
-		 * metadata actually fills the write budget (full=TRUE),
-		 * preventing data from running. Data passes decrement.
+		 * Count monopolized metadata passes toward fairness
+		 * threshold.  Only count when metadata actually filled
+		 * the write budget, starving data passes.
 		 */
-		if (save_position) {
-			if (pass <= L2ARC_MRU_META && full)
-				dev->l2ad_meta_writes++;
-			else if (pass >= L2ARC_MFU_DATA &&
-			    dev->l2ad_meta_writes > 0)
-				dev->l2ad_meta_writes--;
-		}
+		if (save_position && pass <= L2ARC_MRU_META && full)
+			dev->l2ad_meta_writes++;
 
 		/*
 		 * Extended headroom: track cumulative scan depth for
@@ -11796,6 +11793,9 @@ ZFS_MODULE_PARAM(zfs_l2arc, l2arc_, mfuonly, INT, ZMOD_RW,
 
 ZFS_MODULE_PARAM(zfs_l2arc, l2arc_, exclude_special, INT, ZMOD_RW,
 	"Exclude dbufs on special vdevs from being cached to L2ARC if set.");
+
+ZFS_MODULE_PARAM(zfs_l2arc, l2arc_, write_fairness, U64, ZMOD_RW,
+	"Metadata passes before skipping to give data a turn");
 
 ZFS_MODULE_PARAM_CALL(zfs_arc, zfs_arc_, lotsfree_percent, param_set_arc_int,
 	param_get_uint, ZMOD_RW, "System free memory I/O throttle in bytes");
