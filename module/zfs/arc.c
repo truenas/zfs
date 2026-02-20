@@ -10028,14 +10028,6 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		if (zfs_compressed_arc_enabled)
 			headroom = (headroom * l2arc_headroom_boost) / 100;
 
-		/*
-		 * Reduce scan budget for metadata with persistent markers.
-		 * Metadata scans incrementally, needs less headroom per cycle.
-		 */
-		if (save_position &&
-		    (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META))
-			headroom = headroom / 4;
-
 		multilist_t *ml = l2arc_get_list(pass);
 		ASSERT3P(ml, !=, NULL);
 		int num_sublists = multilist_get_num_sublists(ml);
