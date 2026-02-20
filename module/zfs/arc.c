@@ -346,13 +346,6 @@ static struct evict_arg *arc_evict_arg;
 static uint64_t arc_evict_count;
 
 /*
- * Per-pass eviction accumulator for L2ARC extended headroom.
- * Tracks total bytes evicted from each ARC state since boot.
- * Only incremented by the single arc_evict_zthr thread.
- */
-static uint64_t l2arc_evict_acc[L2ARC_FEED_TYPES];
-
-/*
  * List of arc_evict_waiter_t's, representing threads waiting for the
  * arc_evict_count to reach specific values.
  */
@@ -4573,7 +4566,6 @@ arc_evict(void)
 	w = wt * (int64_t)(arc_meta * arc_pm >> 48) >> 16;
 	e = MIN((int64_t)(asize - ac), (int64_t)(mrum - w));
 	bytes = arc_evict_impl(arc_mru, ARC_BUFC_METADATA, e);
-	l2arc_evict_acc[L2ARC_MRU_META] += bytes;
 	total_evicted += bytes;
 	mrum -= bytes;
 	asize -= bytes;
@@ -4582,7 +4574,6 @@ arc_evict(void)
 	w = wt * (int64_t)(arc_meta >> 16) >> 16;
 	e = MIN((int64_t)(asize - ac), (int64_t)(m - bytes - w));
 	bytes = arc_evict_impl(arc_mfu, ARC_BUFC_METADATA, e);
-	l2arc_evict_acc[L2ARC_MFU_META] += bytes;
 	total_evicted += bytes;
 	mfum -= bytes;
 	asize -= bytes;
@@ -4592,7 +4583,6 @@ arc_evict(void)
 	w = wt * (int64_t)(arc_pd >> 16) >> 16;
 	e = MIN((int64_t)(asize - ac), (int64_t)(mrud - w));
 	bytes = arc_evict_impl(arc_mru, ARC_BUFC_DATA, e);
-	l2arc_evict_acc[L2ARC_MRU_DATA] += bytes;
 	total_evicted += bytes;
 	mrud -= bytes;
 	asize -= bytes;
@@ -4600,7 +4590,6 @@ arc_evict(void)
 	/* Evict MFU data. */
 	e = asize - ac;
 	bytes = arc_evict_impl(arc_mfu, ARC_BUFC_DATA, e);
-	l2arc_evict_acc[L2ARC_MFU_DATA] += bytes;
 	mfud -= bytes;
 	total_evicted += bytes;
 
@@ -9112,8 +9101,6 @@ l2arc_pool_markers_init(spa_t *spa)
 		/* Initialize extended headroom for metadata passes */
 		if (pass == L2ARC_MFU_META || pass == L2ARC_MRU_META) {
 			spa->spa_l2arc_info.l2arc_ext[pass].ext_scanned = 0;
-			spa->spa_l2arc_info.l2arc_ext[pass].ext_evict_base =
-			    l2arc_evict_acc[pass];
 		}
 	}
 }
@@ -10016,10 +10003,6 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 		/* Reset extended headroom for metadata passes */
 		spa->spa_l2arc_info.l2arc_ext[L2ARC_MFU_META].ext_scanned = 0;
 		spa->spa_l2arc_info.l2arc_ext[L2ARC_MRU_META].ext_scanned = 0;
-		spa->spa_l2arc_info.l2arc_ext[L2ARC_MFU_META].ext_evict_base =
-		    l2arc_evict_acc[L2ARC_MFU_META];
-		spa->spa_l2arc_info.l2arc_ext[L2ARC_MRU_META].ext_evict_base =
-		    l2arc_evict_acc[L2ARC_MRU_META];
 	}
 	mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
 
@@ -10151,27 +10134,18 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 
 			/*
 			 * Check if scan depth exceeds depth cap.
-			 * Base cap is the larger of: (1) % of state size,
+			 * Cap is the larger of: (1) % of state size,
 			 * or (2) minimum of 2 cycles worth of scanning.
-			 * Eviction credit extends the cap under churn
-			 * (1:1), limited to base_cap so total depth <=
-			 * 2x base (~50% of state when pct_cap dominates).
 			 */
 			uint64_t state_sz = l2arc_get_state_size(pass);
 			uint64_t pct_cap =
 			    state_sz * L2ARC_EXT_HEADROOM_PCT / 100;
 			uint64_t min_cap = headroom * 2;
-			uint64_t base_cap = MAX(pct_cap, min_cap);
-			uint64_t evict_credit =
-			    l2arc_evict_acc[pass] - ext->ext_evict_base;
-			uint64_t extra = MIN(evict_credit, base_cap);
-			uint64_t depth_cap = base_cap + extra;
+			uint64_t depth_cap = MAX(pct_cap, min_cap);
 
 			if (ext->ext_scanned >= depth_cap) {
 				l2arc_flag_pass_reset(spa, pass);
 				ext->ext_scanned = 0;
-				ext->ext_evict_base =
-				    l2arc_evict_acc[pass];
 			}
 
 			mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
