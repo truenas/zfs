@@ -88,7 +88,21 @@ struct zfs_handle {
 	boolean_t zfs_mntcheck;
 	char *zfs_mntopts;
 	uint8_t *zfs_props_table;
+	uint32_t zfs_nspflags; /* namespace prop flags for selective remount */
 };
+
+/*
+ * Internal namespace property flags for selective remount via
+ * mount_setattr(2).  Stored in zfs_handle.zfs_nspflags.
+ */
+#define	ZFS_MNT_PROP_ATIME	(1U << 0)
+#define	ZFS_MNT_PROP_RELATIME	(1U << 1)
+#define	ZFS_MNT_PROP_DEVICES	(1U << 2)
+#define	ZFS_MNT_PROP_EXEC	(1U << 3)
+#define	ZFS_MNT_PROP_SETUID	(1U << 4)
+#define	ZFS_MNT_PROP_READONLY	(1U << 5)
+#define	ZFS_MNT_PROP_XATTR	(1U << 6)
+#define	ZFS_MNT_PROP_NBMAND	(1U << 7)
 
 /*
  * This is different from checking zfs_type, because it will also catch
@@ -182,6 +196,8 @@ extern prop_changelist_t *changelist_gather(zfs_handle_t *, zfs_prop_t, int,
 extern int changelist_unshare(prop_changelist_t *, const enum sa_protocol *);
 extern int changelist_haszonedchild(prop_changelist_t *);
 
+extern boolean_t zfs_is_namespace_prop(zfs_prop_t);
+extern uint32_t zfs_namespace_prop_flag(zfs_prop_t);
 extern void remove_mountpoint(zfs_handle_t *);
 extern int create_parents(libzfs_handle_t *, char *, int);
 
