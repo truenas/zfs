@@ -280,10 +280,13 @@ zfs_is_mountable_internal(zfs_handle_t *zhp)
  */
 static boolean_t
 zfs_is_mountable(zfs_handle_t *zhp, char *buf, size_t buflen,
-    zprop_source_t *source, int flags)
+    zprop_source_t *source, int flags, boolean_t *legacy)
 {
 	char sourceloc[MAXNAMELEN];
 	zprop_source_t sourcetype;
+
+	if (legacy)
+		*legacy = B_FALSE;
 
 	if (!zfs_prop_valid_for_type(ZFS_PROP_MOUNTPOINT, zhp->zfs_type,
 	    B_FALSE))
@@ -292,9 +295,14 @@ zfs_is_mountable(zfs_handle_t *zhp, char *buf, size_t buflen,
 	verify(zfs_prop_get(zhp, ZFS_PROP_MOUNTPOINT, buf, buflen,
 	    &sourcetype, sourceloc, sizeof (sourceloc), B_FALSE) == 0);
 
-	if (strcmp(buf, ZFS_MOUNTPOINT_NONE) == 0 ||
-	    strcmp(buf, ZFS_MOUNTPOINT_LEGACY) == 0)
+	if (strcmp(buf, ZFS_MOUNTPOINT_NONE) == 0)
 		return (B_FALSE);
+
+	if (strcmp(buf, ZFS_MOUNTPOINT_LEGACY) == 0) {
+		if (legacy)
+			*legacy = B_TRUE;
+		return (B_FALSE);
+	}
 
 	if (zfs_prop_get_int(zhp, ZFS_PROP_CANMOUNT) == ZFS_CANMOUNT_OFF)
 		return (B_FALSE);
@@ -432,14 +440,48 @@ zfs_add_options_setattr(zfs_handle_t *zhp, struct mount_attr *attr,
 }
 #endif /* HAVE_MOUNT_SETATTR */
 
+/*
+ * Remount legacy mounts. Iterates all mountpoints since legacy datasets
+ * can be mounted at multiple locations.
+ */
+static int
+zfs_mount_legacy(zfs_handle_t *zhp, const char *options, int flags)
+{
+	FILE *mnttab;
+	struct mnttab entry;
+	int ret = 0;
+
+	if ((mnttab = fopen(MNTTAB, "re")) == NULL)
+		return (0);
+
+	while (getmntent(mnttab, &entry) == 0) {
+		if (strcmp(entry.mnt_fstype, MNTTYPE_ZFS) != 0)
+			continue;
+		if (strcmp(entry.mnt_special, zhp->zfs_name) != 0)
+			continue;
+
+		ret = zfs_mount_at(zhp, options, flags,
+		    entry.mnt_mountp);
+		if (ret != 0)
+			break;
+	}
+
+	(void) fclose(mnttab);
+	return (ret);
+}
+
 int
 zfs_mount(zfs_handle_t *zhp, const char *options, int flags)
 {
 	char mountpoint[ZFS_MAXPROPLEN];
+	boolean_t legacy = B_FALSE;
 
 	if (!zfs_is_mountable(zhp, mountpoint, sizeof (mountpoint), NULL,
-	    flags))
+	    flags, &legacy)) {
+		if (legacy && options && strstr(options, MNTOPT_REMOUNT))
+			return (zfs_mount_legacy(zhp, options, flags));
 		return (0);
+	}
 
 	return (zfs_mount_at(zhp, options, flags, mountpoint));
 }
@@ -455,7 +497,9 @@ zfs_mount_at(zfs_handle_t *zhp, const char *options, int flags,
 	char mntopts[MNT_LINE_MAX];
 	char overlay[ZFS_MAXPROPLEN];
 	char prop_encroot[MAXNAMELEN];
+	char mntpt_prop[ZFS_MAXPROPLEN];
 	boolean_t is_encroot;
+	boolean_t legacy = B_FALSE;
 	zfs_handle_t *encroot_hp = zhp;
 	libzfs_handle_t *hdl = zhp->zfs_hdl;
 	uint64_t keystatus;
@@ -474,10 +518,31 @@ zfs_mount_at(zfs_handle_t *zhp, const char *options, int flags,
 	if (strstr(mntopts, MNTOPT_REMOUNT) != NULL)
 		remount = 1;
 
+	/* Detect legacy mountpoint to skip non-applicable operations. */
+	if (zfs_prop_valid_for_type(ZFS_PROP_MOUNTPOINT, zhp->zfs_type,
+	    B_FALSE)) {
+		verify(zfs_prop_get(zhp, ZFS_PROP_MOUNTPOINT, mntpt_prop,
+		    sizeof (mntpt_prop), NULL, NULL, 0, B_FALSE) == 0);
+		legacy = (strcmp(mntpt_prop, ZFS_MOUNTPOINT_LEGACY) == 0);
+	}
+
 #ifdef HAVE_MOUNT_SETATTR
 	if (remount && zhp->zfs_nspflags)
 		selective = zhp->zfs_nspflags;
 #endif
+
+	/*
+	 * Legacy remounts only proceed with selective mount_setattr
+	 * to avoid clobbering temporary mount flags via mount(2).
+	 */
+	if (legacy && remount) {
+#ifdef HAVE_MOUNT_SETATTR
+		if (!selective)
+			return (0);
+#else
+		return (0);
+#endif
+	}
 
 	/* Potentially duplicates some checks if invoked by zfs_mount(). */
 	if (!zfs_is_mountable_internal(zhp))
@@ -499,8 +564,11 @@ zfs_mount_at(zfs_handle_t *zhp, const char *options, int flags,
 #ifdef HAVE_MOUNT_SETATTR
 	if (selective) {
 		zfs_add_options_setattr(zhp, &mnt_attr, selective);
-		if (mnt_attr.attr_set == 0 && mnt_attr.attr_clr == 0)
+		if (mnt_attr.attr_set == 0 && mnt_attr.attr_clr == 0) {
 			selective = 0;
+			if (legacy)
+				return (0);
+		}
 	}
 #endif
 	rc = zfs_add_options(zhp, mntopts, sizeof (mntopts));
@@ -614,10 +682,12 @@ zfs_mount_at(zfs_handle_t *zhp, const char *options, int flags,
 		rc = mount_setattr(AT_FDCWD, mountpoint, 0,
 		    &mnt_attr, sizeof (mnt_attr));
 		if (rc != 0) {
-			if (errno == ENOSYS)
+			if (errno == ENOSYS) {
+				if (legacy)
+					return (0);
 				rc = do_mount(zhp, mountpoint,
 				    mntopts, flags);
-			else
+			} else
 				rc = errno;
 		}
 	} else
@@ -653,12 +723,13 @@ zfs_mount_at(zfs_handle_t *zhp, const char *options, int flags,
 		    zhp->zfs_name));
 	}
 
-	/* remove the mounted entry before re-adding on remount */
-	if (remount)
-		libzfs_mnttab_remove(hdl, zhp->zfs_name);
-
-	/* add the mounted entry into our cache */
-	libzfs_mnttab_add(hdl, zfs_get_name(zhp), mountpoint, mntopts);
+	/* Update mount table cache (skip for legacy remounts). */
+	if (!legacy) {
+		if (remount)
+			libzfs_mnttab_remove(hdl, zhp->zfs_name);
+		libzfs_mnttab_add(hdl, zfs_get_name(zhp), mountpoint,
+		    mntopts);
+	}
 	return (0);
 }
 
@@ -835,7 +906,8 @@ zfs_share(zfs_handle_t *zhp, const enum sa_protocol *proto)
 	if (proto == NULL)
 		proto = share_all_proto;
 
-	if (!zfs_is_mountable(zhp, mountpoint, sizeof (mountpoint), NULL, 0))
+	if (!zfs_is_mountable(zhp, mountpoint, sizeof (mountpoint), NULL, 0,
+	    NULL))
 		return (0);
 
 	for (curr_proto = proto; *curr_proto != SA_NO_PROTOCOL; curr_proto++) {
@@ -990,7 +1062,7 @@ remove_mountpoint(zfs_handle_t *zhp)
 	zprop_source_t source;
 
 	if (!zfs_is_mountable(zhp, mountpoint, sizeof (mountpoint),
-	    &source, 0))
+	    &source, 0, NULL))
 		return;
 
 	if (source == ZPROP_SRC_DEFAULT ||
