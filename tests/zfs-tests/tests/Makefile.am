@@ -1716,6 +1716,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/mmap/setup.ksh \
 	functional/mmp/cleanup.ksh \
 	functional/mmp/mmp_active_import.ksh \
+	functional/mmp/mmp_concurrent_import.ksh \
 	functional/mmp/mmp_exported_import.ksh \
 	functional/mmp/mmp_hostid.ksh \
 	functional/mmp/mmp_inactive_import.ksh \
@@ -2064,6 +2065,8 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/rsend/send_invalid.ksh \
 	functional/rsend/send_large_blocks_incremental.ksh \
 	functional/rsend/send_large_blocks_initial.ksh \
+	functional/rsend/send_large_microzap_incremental.ksh \
+	functional/rsend/send_large_microzap_transitive.ksh \
 	functional/rsend/send_leak_keymaps.ksh \
 	functional/rsend/send-L_toggle.ksh \
 	functional/rsend/send_mixed_raw.ksh \

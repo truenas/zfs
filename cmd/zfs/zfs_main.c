@@ -1056,7 +1056,7 @@ default_volblocksize(zpool_handle_t *zhp, nvlist_t *props)
 }
 
 /*
- * zfs create [-Pnpv] [-o prop=value] ... fs
+ * zfs create [-Pnpuv] [-o prop=value] ... fs
  * zfs create [-Pnpsv] [-b blocksize] [-o prop=value] ... -V vol size
  *
  * Create a new dataset.  This command can be used to create filesystems
@@ -9416,7 +9416,7 @@ zfs_do_help(int argc, char **argv)
 
 	execlp("man", "man", page, NULL);
 
-	fprintf(stderr, "couldn't run man program: %s", strerror(errno));
+	fprintf(stderr, "couldn't run man program: %s\n", strerror(errno));
 	return (-1);
 }
 
