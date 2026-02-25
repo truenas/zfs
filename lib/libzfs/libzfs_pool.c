@@ -380,6 +380,8 @@ zpool_get_prop(zpool_handle_t *zhp, zpool_prop_t prop, char *buf,
 		case ZPOOL_PROP_BCLONESAVED:
 		case ZPOOL_PROP_BCLONEUSED:
 		case ZPOOL_PROP_DEDUP_TABLE_SIZE:
+		case ZPOOL_PROP_DEDUPUSED:
+		case ZPOOL_PROP_DEDUPSAVED:
 		case ZPOOL_PROP_DEDUPCACHED:
 			if (literal)
 				(void) snprintf(buf, len, "%llu",
@@ -2208,6 +2210,11 @@ zpool_import_props(libzfs_handle_t *hdl, nvlist_t *config, const char *newname,
 	zcmd_free_nvlists(&zc);
 
 	zpool_get_load_policy(config, &policy);
+
+	if (getenv("ZFS_LOAD_INFO_DEBUG") && nv != NULL &&
+	    nvlist_lookup_nvlist(nv, ZPOOL_CONFIG_LOAD_INFO, &nvinfo) == 0) {
+		dump_nvlist(nvinfo, 4);
+	}
 
 	if (error) {
 		char desc[1024];
