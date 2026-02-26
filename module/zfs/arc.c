@@ -9101,6 +9101,8 @@ l2arc_pool_markers_init(spa_t *spa)
 		}
 
 		spa->spa_l2arc_info.l2arc_ext_scanned[pass] = 0;
+		spa->spa_l2arc_info.l2arc_sweep_state[pass] =
+		    L2ARC_SWEEP_BASE;
 	}
 }
 
@@ -10005,8 +10007,11 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	    spa->spa_l2arc_info.l2arc_smallest_capacity / 8) {
 		l2arc_reset_all_markers(spa);
 		/* Reset extended headroom for all passes */
-		for (int p = 0; p < L2ARC_FEED_TYPES; p++)
+		for (int p = 0; p < L2ARC_FEED_TYPES; p++) {
 			spa->spa_l2arc_info.l2arc_ext_scanned[p] = 0;
+			spa->spa_l2arc_info.l2arc_sweep_state[p] =
+			    L2ARC_SWEEP_BASE;
+		}
 	}
 	mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);
 
@@ -10016,10 +10021,41 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 	boolean_t skip_meta = (save_position &&
 	    l2arc_meta_cycles > 0 &&
 	    dev->l2ad_meta_cycles >= l2arc_meta_cycles);
+	/*
+	 * No point skipping metadata if both data passes are
+	 * already extended.
+	 */
+	if (skip_meta &&
+	    spa->spa_l2arc_info.l2arc_sweep_state[L2ARC_MFU_DATA] ==
+	    L2ARC_SWEEP_EXTENDED &&
+	    spa->spa_l2arc_info.l2arc_sweep_state[L2ARC_MRU_DATA] ==
+	    L2ARC_SWEEP_EXTENDED)
+		skip_meta = B_FALSE;
 	if (skip_meta)
 		dev->l2ad_meta_cycles = 0;
 
-	for (int pass = 0; pass < L2ARC_FEED_TYPES; pass++) {
+	/*
+	 * Build pass ordering: base passes first, extended passes
+	 * last.  Base passes get priority for the write budget.
+	 */
+	int pass_order[L2ARC_FEED_TYPES];
+	int npass = 0;
+	if (save_position) {
+		for (int i = 0; i < L2ARC_FEED_TYPES; i++)
+			if (spa->spa_l2arc_info.l2arc_sweep_state[i] !=
+			    L2ARC_SWEEP_EXTENDED)
+				pass_order[npass++] = i;
+		for (int i = 0; i < L2ARC_FEED_TYPES; i++)
+			if (spa->spa_l2arc_info.l2arc_sweep_state[i] ==
+			    L2ARC_SWEEP_EXTENDED)
+				pass_order[npass++] = i;
+	} else {
+		for (int i = 0; i < L2ARC_FEED_TYPES; i++)
+			pass_order[npass++] = i;
+	}
+
+	for (int p = 0; p < npass; p++) {
+		int pass = pass_order[p];
 		/*
 		 * pass == 0: MFU meta
 		 * pass == 1: MRU meta
@@ -10048,6 +10084,7 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 
 		int current_sublist = multilist_get_random_index(ml);
 		int processed_sublists = 0;
+		uint64_t pass_start_asize = write_asize;
 		while (processed_sublists < num_sublists && !full) {
 			uint64_t sublist_headroom;
 
@@ -10109,27 +10146,42 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz)
 			dev->l2ad_meta_cycles++;
 
 		/*
-		 * Depth cap: track cumulative bytes scanned per pass
-		 * and reset markers when the scan cap is reached.
-		 * Keeps the marker near the tail where L2ARC adds
-		 * the most value.
+		 * Depth cap: track cumulative bytes scanned per pass.
+		 * At the base cap, productive sweeps (ACTIVE) reset
+		 * to tail.  Unproductive sweeps (BASE) enter EXTENDED
+		 * mode and scan toward the ceiling (2x base).
 		 */
 		if (save_position) {
 			mutex_enter(&spa->spa_l2arc_info.l2arc_sublist_lock);
 
-			spa->spa_l2arc_info.l2arc_ext_scanned[pass] +=
-			    consumed_headroom;
+			l2arc_sweep_state_t *sweep =
+			    &spa->spa_l2arc_info.l2arc_sweep_state[pass];
 
 			uint64_t state_sz = l2arc_get_state_size(pass);
-			uint64_t scan_cap =
+			uint64_t base_cap =
 			    state_sz * l2arc_ext_headroom_pct / 100;
 
-			if (scan_cap > 0 &&
-			    spa->spa_l2arc_info.l2arc_ext_scanned[pass] >=
-			    scan_cap) {
-				l2arc_flag_pass_reset(spa, pass);
-				spa->spa_l2arc_info.l2arc_ext_scanned[pass] =
-				    0;
+			if (write_asize > pass_start_asize &&
+			    *sweep == L2ARC_SWEEP_BASE)
+				*sweep = L2ARC_SWEEP_ACTIVE;
+
+			spa->spa_l2arc_info.l2arc_ext_scanned[pass] +=
+			    consumed_headroom;
+			uint64_t scanned =
+			    spa->spa_l2arc_info.l2arc_ext_scanned[pass];
+
+			uint64_t cap = (*sweep == L2ARC_SWEEP_EXTENDED) ?
+			    base_cap * 2 : base_cap;
+
+			if (cap > 0 && scanned >= cap) {
+				if (*sweep == L2ARC_SWEEP_BASE) {
+					*sweep = L2ARC_SWEEP_EXTENDED;
+				} else {
+					l2arc_flag_pass_reset(spa, pass);
+					spa->spa_l2arc_info.
+					    l2arc_ext_scanned[pass] = 0;
+					*sweep = L2ARC_SWEEP_BASE;
+				}
 			}
 
 			mutex_exit(&spa->spa_l2arc_info.l2arc_sublist_lock);

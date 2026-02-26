@@ -52,6 +52,17 @@ extern "C" {
 #define	L2ARC_MRU_DATA		3
 
 /*
+ * Sweep state for each L2ARC pass.  Tracks whether the current
+ * sweep through the base zone produced any writes, and whether
+ * the pass has extended past the base cap toward the ceiling.
+ */
+typedef enum l2arc_sweep_state {
+	L2ARC_SWEEP_BASE,	/* scanning base zone, no writes yet */
+	L2ARC_SWEEP_ACTIVE,	/* scanning base zone, wrote something */
+	L2ARC_SWEEP_EXTENDED	/* past base cap, scanning deeper */
+} l2arc_sweep_state_t;
+
+/*
  * L2ARC state and statistics for persistent marker management.
  */
 typedef struct l2arc_info {
@@ -72,6 +83,11 @@ typedef struct l2arc_info {
 	 * before resetting, based on % of state size.
 	 */
 	uint64_t	l2arc_ext_scanned[L2ARC_FEED_TYPES];
+	/*
+	 * Per-pass sweep state.  Controls depth cap behavior
+	 * and scheduling priority.
+	 */
+	l2arc_sweep_state_t	l2arc_sweep_state[L2ARC_FEED_TYPES];
 } l2arc_info_t;
 
 /*
