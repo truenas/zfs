@@ -196,6 +196,7 @@ extern int changelist_haszonedchild(prop_changelist_t *);
 
 extern boolean_t zfs_is_namespace_prop(zfs_prop_t);
 extern uint32_t zfs_namespace_prop_flag(zfs_prop_t);
+extern boolean_t zfs_is_mountable_internal(zfs_handle_t *);
 extern int zfs_mount_setattr(zfs_handle_t *, uint32_t);
 extern void remove_mountpoint(zfs_handle_t *);
 extern int create_parents(libzfs_handle_t *, char *, int);
