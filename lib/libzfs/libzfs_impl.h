@@ -225,6 +225,13 @@ typedef struct differ_info {
 	int cleanupfd;
 	int outputfd;
 	int datafd;
+	zfs_diff_cb_t	di_cb;		/* callback for structured output;
+					 * NULL = use fp */
+	void		*di_cb_arg;	/* opaque arg passed to di_cb */
+	int		di_cb_ret;	/* last return value from di_cb;
+					 * non-zero aborts */
+	uint64_t	di_current_obj;	/* object number for current entry */
+	zfs_stat_t	di_from_stat;	/* from-snapshot stats for current entry */
 } differ_info_t;
 
 extern int do_mount(zfs_handle_t *zhp, const char *mntpt, const char *opts,

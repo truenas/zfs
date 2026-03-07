@@ -939,8 +939,58 @@ typedef enum diff_flags {
 	ZFS_DIFF_NO_MANGLE = 1 << 3
 } diff_flags_t;
 
+typedef enum zfs_diff_type {
+	ZFS_DIFF_ADDED = '+',
+	ZFS_DIFF_REMOVED = '-',
+	ZFS_DIFF_MODIFIED = 'M',
+	ZFS_DIFF_RENAMED = 'R',
+} zfs_diff_type_t;
+
+typedef struct zfs_diff_entry {
+	zfs_diff_type_t de_type;
+
+	/* ctime [seconds, nanoseconds] in from-snapshot; zero for added entries */
+	uint64_t de_ctime_from[2];
+
+	/* ctime [seconds, nanoseconds] in to-snapshot; zero for removed entries */
+	uint64_t de_ctime_to[2];
+
+	/* path in tosnap (adds/modifies) or fromsnap (removes) */
+	char de_path[MAXPATHLEN];
+
+	/* rename destination path; empty string unless de_type == ZFS_DIFF_RENAMED */
+	char de_path2[MAXPATHLEN];
+
+	/* ZFS object number, equals st_ino */
+	uint64_t de_inode;
+
+	/* txg in which the object was created; lower 32 bits equal st_gen */
+	uint64_t de_gen;
+
+	/* full POSIX mode word (type bits + permission bits) */
+	uint64_t de_mode;
+
+	/* hard link count */
+	uint64_t de_nlink;
+
+	/*
+	 * The following fields are set for ZFS_DIFF_MODIFIED entries only.
+	 */
+
+	/* nlink in from-snapshot; 0 if nlink did not change */
+	uint64_t de_nlink_from;
+
+	/* mode in from-snapshot; 0 if mode did not change */
+	uint64_t de_mode_from;
+} zfs_diff_entry_t;
+
+/* Return non-zero to abort iteration. */
+typedef int (*zfs_diff_cb_t)(zfs_diff_entry_t *entry, void *arg);
+
 _LIBZFS_H int zfs_show_diffs(zfs_handle_t *, int, const char *, const char *,
     int);
+_LIBZFS_H int zfs_iter_diffs(zfs_handle_t *, const char *, const char *,
+    int, zfs_diff_cb_t, void *);
 
 /*
  * Miscellaneous functions.
