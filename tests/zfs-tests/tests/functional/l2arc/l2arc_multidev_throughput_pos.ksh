@@ -63,7 +63,7 @@ save_tunable ARC_MIN
 save_tunable ARC_MAX
 
 # Test parameters
-typeset cache_sz=8192
+typeset cache_sz=3072
 typeset window_time=10
 typeset num_windows=3
 typeset arc_max_mb=950
@@ -73,8 +73,8 @@ typeset fill_mb=$arc_max_mb
 log_must set_tunable32 L2ARC_DWPD_LIMIT 0
 log_must set_tunable64 L2ARC_EXT_HEADROOM_PCT 0
 
-# Set L2ARC_WRITE_MAX to 8MB/s per device
-log_must set_tunable32 L2ARC_WRITE_MAX $((8 * 1024 * 1024))
+# Set L2ARC_WRITE_MAX to 4MB/s per device
+log_must set_tunable32 L2ARC_WRITE_MAX $((4 * 1024 * 1024))
 log_must set_tunable32 L2ARC_NOPREFETCH 0
 
 # Configure ARC size
