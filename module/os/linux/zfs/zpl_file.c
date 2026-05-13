@@ -43,6 +43,9 @@
 #ifdef HAVE_VFS_FILEMAP_DIRTY_FOLIO
 #include <linux/writeback.h>
 #endif
+#ifdef HAVE_FILELOCK_HEADER
+#include <linux/filelock.h>
+#endif
 
 /*
  * When using fallocate(2) to preallocate space, inflate the requested
@@ -786,11 +789,17 @@ zpl_fadvise(struct file *filp, loff_t offset, loff_t len, int advice)
 		}
 	}
 
-	zfs_exit(zfsvfs, FTAG);
-
 #ifdef HAVE_GENERIC_FADVISE
 	error = generic_fadvise(filp, offset, len, advice);
 #endif
+
+	if (error == 0 && advice == POSIX_FADV_DONTNEED) {
+		loff_t rlen = len ? len : i_size_read(ip) - offset;
+		dmu_evict_range(os, zp->z_id, offset, rlen);
+	}
+
+	zfs_exit(zfsvfs, FTAG);
+
 	return (error);
 }
 
@@ -1225,6 +1234,7 @@ const struct file_operations zpl_file_operations = {
 	.mmap		= zpl_mmap,
 	.fsync		= zpl_fsync,
 	.fallocate	= zpl_fallocate,
+	.setlease	= generic_setlease,
 	.copy_file_range	= zpl_copy_file_range,
 #ifdef HAVE_VFS_CLONE_FILE_RANGE
 	.clone_file_range	= zpl_clone_file_range,
@@ -1247,6 +1257,7 @@ const struct file_operations zpl_dir_file_operations = {
 	.read		= generic_read_dir,
 	.iterate_shared	= zpl_iterate,
 	.fsync		= zpl_fsync,
+	.setlease	= generic_setlease,
 	.unlocked_ioctl = zpl_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl   = zpl_compat_ioctl,
