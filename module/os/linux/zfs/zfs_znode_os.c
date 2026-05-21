@@ -566,11 +566,24 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	if (sa_bulk_lookup(zp->z_sa_hdl, bulk, count) != 0 || tmp_gen == 0 ||
 	    (dmu_objset_projectquota_enabled(zfsvfs->z_os) &&
 	    (zp->z_pflags & ZFS_PROJID) &&
-	    sa_lookup(zp->z_sa_hdl, SA_ZPL_PROJID(zfsvfs), &projid, 8) != 0)) {
+	    sa_lookup(zp->z_sa_hdl, SA_ZPL_PROJID(zfsvfs), &projid, 8) != 0) ||
+	    (zp->z_is_sa && (zp->z_pflags & ZFS_HAS_SEQ) &&
+	    sa_lookup(zp->z_sa_hdl, SA_ZPL_SEQ(zfsvfs),
+	    &zp->z_seq, sizeof (zp->z_seq)) != 0)) {
 		if (hdl == NULL)
 			sa_handle_destroy(zp->z_sa_hdl);
 		zp->z_sa_hdl = NULL;
 		goto error;
+	}
+
+	if (!zp->z_is_sa || !(zp->z_pflags & ZFS_HAS_SEQ)) {
+		/*
+		 * No SA_ZPL_SEQ on disk yet. Seed z_seq above any cookie the
+		 * pre-persistence code could have presented ((ctime << 32) |
+		 * low) so it stays monotonic across the upgrade; the first
+		 * modify migrates the file.
+		 */
+		zp->z_seq = (ctime[0] + 1) << 32;
 	}
 
 	zp->z_projid = projid;
@@ -1754,7 +1767,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	zilog_t *zilog = zfsvfs->z_log;
 	uint64_t mode;
 	uint64_t mtime[2], ctime[2];
-	sa_bulk_attr_t bulk[3];
+	sa_bulk_attr_t bulk[4];
 	int count = 0;
 	int error;
 
@@ -1780,7 +1793,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 		goto out;
 log:
 	tx = dmu_tx_create(zfsvfs->z_os);
-	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, ZFS_SEQ_MAY_GROW(zp));
 	zfs_sa_upgrade_txholds(tx, zp);
 	error = dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (error) {
@@ -1793,6 +1806,7 @@ log:
 	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_FLAGS(zfsvfs),
 	    NULL, &zp->z_pflags, 8);
 	zfs_tstamp_update_setup(zp, CONTENT_MODIFIED, mtime, ctime);
+	ZFS_PERSIST_SEQ(zp, bulk, count);
 	error = sa_bulk_update(zp->z_sa_hdl, bulk, count, tx);
 	ASSERT0(error);
 

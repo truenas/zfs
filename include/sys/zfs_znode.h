@@ -89,6 +89,7 @@ extern "C" {
 #define	ZFS_ACL_AUTO_INHERIT	0x40		/* ACL should be inherited */
 #define	ZFS_BONUS_SCANSTAMP	0x80		/* Scanstamp in bonus area */
 #define	ZFS_NO_EXECS_DENIED	0x100		/* exec was given to everyone */
+#define	ZFS_HAS_SEQ		0x200		/* SA_ZPL_SEQ in layout */
 
 #define	SA_ZPL_ATIME(z)		z->z_attr_table[ZPL_ATIME]
 #define	SA_ZPL_MTIME(z)		z->z_attr_table[ZPL_MTIME]
@@ -112,6 +113,31 @@ extern "C" {
 #define	SA_ZPL_DXATTR(z)	z->z_attr_table[ZPL_DXATTR]
 #define	SA_ZPL_PAD(z)		z->z_attr_table[ZPL_PAD]
 #define	SA_ZPL_PROJID(z)	z->z_attr_table[ZPL_PROJID]
+#define	SA_ZPL_SEQ(z)		z->z_attr_table[ZPL_SEQ]
+
+/*
+ * may_grow for a dmu_tx_hold_sa() that may persist z_seq: the SA layout
+ * grows the first time SA_ZPL_SEQ is added, so grow until ZFS_HAS_SEQ is
+ * set. Mirrors ZFS_PROJID first-set growth.
+ */
+#define	ZFS_SEQ_MAY_GROW(zp)	\
+	(((zp)->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE)
+
+/*
+ * Persist zp->z_seq: set ZFS_HAS_SEQ and add SA_ZPL_SEQ to the caller's
+ * bulk. No-op for legacy (non-SA-native) znodes. Caller's bulk MUST
+ * include SA_ZPL_FLAGS so the bit reaches disk in the same transaction.
+ * Chunked writers add SA_ZPL_SEQ once before their loop and set
+ * ZFS_HAS_SEQ per chunk instead.
+ */
+#define	ZFS_PERSIST_SEQ(zp, bulk, count) \
+{ \
+	if ((zp)->z_is_sa) { \
+		(zp)->z_pflags |= ZFS_HAS_SEQ; \
+		SA_ADD_BULK_ATTR((bulk), (count), SA_ZPL_SEQ(ZTOZSB(zp)), \
+		    NULL, &(zp)->z_seq, sizeof ((zp)->z_seq)); \
+	} \
+}
 
 /*
  * Is ID ephemeral?
@@ -195,7 +221,7 @@ typedef struct znode {
 	boolean_t	z_is_ctldir;	/* are we .zfs entry */
 	boolean_t	z_suspended;	/* extra ref from a suspend? */
 	uint_t		z_blksz;	/* block size in bytes */
-	uint_t		z_seq;		/* modification sequence number */
+	uint64_t	z_seq;		/* modification sequence number */
 	uint64_t	z_mapcnt;	/* number of pages mapped to file */
 	uint64_t	z_dnodesize;	/* dnode size */
 	uint64_t	z_size;		/* file size (cached) */
