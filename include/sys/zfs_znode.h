@@ -89,6 +89,7 @@ extern "C" {
 #define	ZFS_ACL_AUTO_INHERIT	0x40		/* ACL should be inherited */
 #define	ZFS_BONUS_SCANSTAMP	0x80		/* Scanstamp in bonus area */
 #define	ZFS_NO_EXECS_DENIED	0x100		/* exec was given to everyone */
+#define	ZFS_HAS_SEQ		0x200		/* SA_ZPL_SEQ in layout */
 
 #define	SA_ZPL_ATIME(z)		z->z_attr_table[ZPL_ATIME]
 #define	SA_ZPL_MTIME(z)		z->z_attr_table[ZPL_MTIME]
@@ -112,6 +113,24 @@ extern "C" {
 #define	SA_ZPL_DXATTR(z)	z->z_attr_table[ZPL_DXATTR]
 #define	SA_ZPL_PAD(z)		z->z_attr_table[ZPL_PAD]
 #define	SA_ZPL_PROJID(z)	z->z_attr_table[ZPL_PROJID]
+#define	SA_ZPL_SEQ(z)		z->z_attr_table[ZPL_SEQ]
+
+/*
+ * Persist zp->z_seq into the SA bulk and mark the file as carrying
+ * SA_ZPL_SEQ in its layout. No-op for legacy (non-SA-native) znodes
+ * since SA_ZPL_SEQ cannot be added to their layout. Caller's bulk MUST
+ * include SA_ZPL_FLAGS so the ZFS_HAS_SEQ bit reaches disk in the same
+ * transaction.
+ */
+#define	ZFS_PERSIST_SEQ(zp, bulk, count, seqp) \
+{ \
+	if ((zp)->z_is_sa) { \
+		*(seqp) = (zp)->z_seq; \
+		(zp)->z_pflags |= ZFS_HAS_SEQ; \
+		SA_ADD_BULK_ATTR((bulk), (count), SA_ZPL_SEQ(ZTOZSB(zp)), \
+		    NULL, (seqp), sizeof (uint64_t)); \
+	} \
+}
 
 /*
  * Is ID ephemeral?
