@@ -1,0 +1,25 @@
+config ZFS
+	tristate "ZFS filesystem support"
+	depends on EFI_PARTITION
+	depends on BLOCK
+	select ZLIB_INFLATE
+	select ZLIB_DEFLATE
+	help
+	  This is the ZFS filesystem from the OpenZFS project.
+
+	  See https://github.com/openzfs/zfs
+
+	  To compile this file system support as a module, choose M here.
+
+	  If unsure, say N.
+
+config ZFS_DEBUG
+	bool "ZFS debugging"
+	depends on ZFS
+	help
+	  Enable ZFS debugging. This turns on all ASSERT() assertions,
+	  enables additional debug-only code paths, and promotes
+	  compiler warnings to errors. This should only be enabled for
+	  development or troubleshooting.
+
+	  If unsure, say N.
