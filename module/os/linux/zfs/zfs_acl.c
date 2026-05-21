@@ -1360,8 +1360,8 @@ zfs_aclset_common(znode_t *zp, zfs_acl_t *aclp, cred_t *cr, dmu_tx_t *tx)
 	dmu_object_type_t	otype;
 	zfs_acl_locator_cb_t	locate = { 0 };
 	uint64_t		mode;
-	sa_bulk_attr_t		bulk[5];
-	uint64_t		ctime[2];
+	sa_bulk_attr_t		bulk[6];
+	uint64_t		ctime[2], change_seq;
 	int			count = 0;
 	zfs_acl_phys_t		acl_phys;
 
@@ -1501,7 +1501,11 @@ zfs_aclset_common(znode_t *zp, zfs_acl_t *aclp, cred_t *cr, dmu_tx_t *tx)
 		zp->z_pflags |= ZFS_ACL_TRIVIAL;
 
 	zfs_tstamp_update_setup(zp, STATE_CHANGED, NULL, ctime);
-	return (sa_bulk_update(zp->z_sa_hdl, bulk, count, tx));
+	ZFS_PERSIST_SEQ(zp, bulk, count, &change_seq);
+	error = sa_bulk_update(zp->z_sa_hdl, bulk, count, tx);
+	if (error != 0)
+		zp->z_pflags &= ~ZFS_HAS_SEQ;
+	return (error);
 }
 
 static void

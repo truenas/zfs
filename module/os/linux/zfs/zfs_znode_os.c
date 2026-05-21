@@ -572,6 +572,16 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 		goto error;
 	}
 
+	/* Restore persisted z_seq if file's layout carries SA_ZPL_SEQ. */
+	if (zp->z_pflags & ZFS_HAS_SEQ) {
+		uint64_t change_seq;
+		if (sa_lookup(zp->z_sa_hdl, SA_ZPL_SEQ(zfsvfs),
+		    &change_seq, sizeof (change_seq)) == 0)
+			zp->z_seq = (uint_t)change_seq;
+		else
+			zp->z_pflags &= ~ZFS_HAS_SEQ;
+	}
+
 	zp->z_projid = projid;
 	zp->z_mode = ip->i_mode = mode;
 	ip->i_generation = (uint32_t)tmp_gen;
@@ -1752,8 +1762,8 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	zfsvfs_t *zfsvfs = ZTOZSB(zp);
 	zilog_t *zilog = zfsvfs->z_log;
 	uint64_t mode;
-	uint64_t mtime[2], ctime[2];
-	sa_bulk_attr_t bulk[3];
+	uint64_t mtime[2], ctime[2], change_seq;
+	sa_bulk_attr_t bulk[4];
 	int count = 0;
 	int error;
 
@@ -1779,7 +1789,8 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 		goto out;
 log:
 	tx = dmu_tx_create(zfsvfs->z_os);
-	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl,
+	    (zp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	zfs_sa_upgrade_txholds(tx, zp);
 	error = dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (error) {
@@ -1792,6 +1803,7 @@ log:
 	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_FLAGS(zfsvfs),
 	    NULL, &zp->z_pflags, 8);
 	zfs_tstamp_update_setup(zp, CONTENT_MODIFIED, mtime, ctime);
+	ZFS_PERSIST_SEQ(zp, bulk, count, &change_seq);
 	error = sa_bulk_update(zp->z_sa_hdl, bulk, count, tx);
 	ASSERT(error == 0);
 

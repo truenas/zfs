@@ -748,7 +748,8 @@ top:
 		if (fuid_dirtied)
 			zfs_fuid_txhold(zfsvfs, tx);
 		dmu_tx_hold_zap(tx, dzp->z_id, TRUE, name);
-		dmu_tx_hold_sa(tx, dzp->z_sa_hdl, B_FALSE);
+		dmu_tx_hold_sa(tx, dzp->z_sa_hdl,
+		    (dzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 		if (!zfsvfs->z_use_sa &&
 		    acl_ids.z_aclp->z_acl_bytes > ZFS_ACE_SPACE) {
 			dmu_tx_hold_write(tx, DMU_NEW_OBJECT,
@@ -1079,7 +1080,10 @@ top:
 	obj = zp->z_id;
 	tx = dmu_tx_create(zfsvfs->z_os);
 	dmu_tx_hold_zap(tx, dzp->z_id, FALSE, name);
-	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl,
+	    (zp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
+	dmu_tx_hold_sa(tx, dzp->z_sa_hdl,
+	    (dzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	zfs_sa_upgrade_txholds(tx, zp);
 	zfs_sa_upgrade_txholds(tx, dzp);
 	if (may_delete_now) {
@@ -1096,7 +1100,8 @@ top:
 		error = zfs_zget(zfsvfs, xattr_obj, &xzp);
 		ASSERT0(error);
 		dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_TRUE);
-		dmu_tx_hold_sa(tx, xzp->z_sa_hdl, B_FALSE);
+		dmu_tx_hold_sa(tx, xzp->z_sa_hdl,
+		    (xzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	}
 
 	mutex_enter(&zp->z_lock);
@@ -1364,6 +1369,8 @@ top:
 	tx = dmu_tx_create(zfsvfs->z_os);
 	dmu_tx_hold_zap(tx, dzp->z_id, TRUE, dirname);
 	dmu_tx_hold_zap(tx, DMU_NEW_OBJECT, FALSE, NULL);
+	dmu_tx_hold_sa(tx, dzp->z_sa_hdl,
+	    (dzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	fuid_dirtied = zfsvfs->z_fuid_dirty;
 	if (fuid_dirtied)
 		zfs_fuid_txhold(zfsvfs, tx);
@@ -1515,7 +1522,10 @@ top:
 
 	tx = dmu_tx_create(zfsvfs->z_os);
 	dmu_tx_hold_zap(tx, dzp->z_id, FALSE, name);
-	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl,
+	    (zp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
+	dmu_tx_hold_sa(tx, dzp->z_sa_hdl,
+	    (dzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	dmu_tx_hold_zap(tx, zfsvfs->z_unlinkedobj, FALSE, NULL);
 	zfs_sa_upgrade_txholds(tx, zp);
 	zfs_sa_upgrade_txholds(tx, dzp);
@@ -1978,7 +1988,8 @@ zfs_setattr(znode_t *zp, vattr_t *vap, int flags, cred_t *cr, zidmap_t *mnt_ns)
 	boolean_t	fuid_dirtied = B_FALSE;
 	boolean_t	handle_eadir = B_FALSE;
 	sa_bulk_attr_t	*bulk, *xattr_bulk;
-	int		count = 0, xattr_count = 0, bulks = 8;
+	int		count = 0, xattr_count = 0, bulks = 9;
+	uint64_t	change_seq;
 
 	if (mask == 0)
 		return (0);
@@ -2407,7 +2418,8 @@ top:
 		if (((mask & ATTR_XVATTR) &&
 		    XVA_ISSET_REQ(xvap, XAT_AV_SCANSTAMP)) ||
 		    (projid != ZFS_INVALID_PROJID &&
-		    !(zp->z_pflags & ZFS_PROJID)))
+		    !(zp->z_pflags & ZFS_PROJID)) ||
+		    !(zp->z_pflags & ZFS_HAS_SEQ))
 			dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_TRUE);
 		else
 			dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
@@ -2625,6 +2637,7 @@ top:
 		 */
 		if (!(mask & (ATTR_MODE | ATTR_SIZE)))
 			zp->z_seq++;
+		ZFS_PERSIST_SEQ(zp, bulk, count, &change_seq);
 	}
 
 	mutex_exit(&zp->z_lock);
@@ -2658,8 +2671,11 @@ out:
 		if (err == ERESTART)
 			goto top;
 	} else {
-		if (count > 0)
+		if (count > 0) {
 			err2 = sa_bulk_update(zp->z_sa_hdl, bulk, count, tx);
+			if (err2 != 0)
+				zp->z_pflags &= ~ZFS_HAS_SEQ;
+		}
 		dmu_tx_commit(tx);
 		if (attrzp) {
 			if (err2 == 0 && handle_eadir)
@@ -3088,17 +3104,21 @@ top:
 	}
 
 	tx = dmu_tx_create(zfsvfs->z_os);
-	dmu_tx_hold_sa(tx, szp->z_sa_hdl, B_FALSE);
-	dmu_tx_hold_sa(tx, sdzp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, szp->z_sa_hdl,
+	    (szp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
+	dmu_tx_hold_sa(tx, sdzp->z_sa_hdl,
+	    (sdzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	dmu_tx_hold_zap(tx, sdzp->z_id,
 	    (rflags & RENAME_EXCHANGE) ? TRUE : FALSE, snm);
 	dmu_tx_hold_zap(tx, tdzp->z_id, TRUE, tnm);
 	if (sdzp != tdzp) {
-		dmu_tx_hold_sa(tx, tdzp->z_sa_hdl, B_FALSE);
+		dmu_tx_hold_sa(tx, tdzp->z_sa_hdl,
+		    (tdzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 		zfs_sa_upgrade_txholds(tx, tdzp);
 	}
 	if (tzp) {
-		dmu_tx_hold_sa(tx, tzp->z_sa_hdl, B_FALSE);
+		dmu_tx_hold_sa(tx, tzp->z_sa_hdl,
+		    (tzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 		zfs_sa_upgrade_txholds(tx, tzp);
 	}
 	if (rflags & RENAME_WHITEOUT) {
@@ -3106,7 +3126,8 @@ top:
 		    ZFS_SA_BASE_ATTR_SIZE);
 
 		dmu_tx_hold_zap(tx, sdzp->z_id, TRUE, snm);
-		dmu_tx_hold_sa(tx, sdzp->z_sa_hdl, B_FALSE);
+		dmu_tx_hold_sa(tx, sdzp->z_sa_hdl,
+		    (sdzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 		if (!zfsvfs->z_use_sa &&
 		    acl_ids.z_aclp->z_acl_bytes > ZFS_ACE_SPACE) {
 			dmu_tx_hold_write(tx, DMU_NEW_OBJECT,
@@ -3407,7 +3428,8 @@ top:
 	dmu_tx_hold_zap(tx, dzp->z_id, TRUE, name);
 	dmu_tx_hold_sa_create(tx, acl_ids.z_aclp->z_acl_bytes +
 	    ZFS_SA_BASE_ATTR_SIZE + len);
-	dmu_tx_hold_sa(tx, dzp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, dzp->z_sa_hdl,
+	    (dzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	if (!zfsvfs->z_use_sa && acl_ids.z_aclp->z_acl_bytes > ZFS_ACE_SPACE) {
 		dmu_tx_hold_write(tx, DMU_NEW_OBJECT, 0,
 		    acl_ids.z_aclp->z_acl_bytes);
@@ -3658,7 +3680,10 @@ top:
 	}
 
 	tx = dmu_tx_create(zfsvfs->z_os);
-	dmu_tx_hold_sa(tx, szp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, szp->z_sa_hdl,
+	    (szp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
+	dmu_tx_hold_sa(tx, tdzp->z_sa_hdl,
+	    (tdzp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	dmu_tx_hold_zap(tx, tdzp->z_id, TRUE, name);
 	if (is_tmpfile)
 		dmu_tx_hold_zap(tx, zfsvfs->z_unlinkedobj, FALSE, NULL);
@@ -3760,8 +3785,9 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 	caddr_t		va;
 	int		err = 0;
 	uint64_t	mtime[2], ctime[2];
+	uint64_t	change_seq;
 	inode_timespec_t tmp_ts;
-	sa_bulk_attr_t	bulk[3];
+	sa_bulk_attr_t	bulk[4];
 	int		cnt = 0;
 	struct address_space *mapping;
 
@@ -3878,7 +3904,8 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 
 	tx = dmu_tx_create(zfsvfs->z_os);
 	dmu_tx_hold_write(tx, zp->z_id, pgoff, pglen);
-	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl,
+	    (zp->z_pflags & ZFS_HAS_SEQ) ? B_FALSE : B_TRUE);
 	zfs_sa_upgrade_txholds(tx, zp);
 
 	err = dmu_tx_assign(tx, DMU_TX_WAIT);
@@ -3913,8 +3940,11 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 	ZFS_TIME_ENCODE(&tmp_ts, ctime);
 	zp->z_atime_dirty = B_FALSE;
 	zp->z_seq++;
+	ZFS_PERSIST_SEQ(zp, bulk, cnt, &change_seq);
 
 	err = sa_bulk_update(zp->z_sa_hdl, bulk, cnt, tx);
+	if (err != 0)
+		zp->z_pflags &= ~ZFS_HAS_SEQ;
 
 	/*
 	 * A note about for_sync vs wbc->sync_mode.
