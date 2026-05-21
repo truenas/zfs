@@ -151,6 +151,7 @@ zfs_znode_cache_constructor(void *buf, void *arg, int kmflags)
 	zp->z_xattr_cached = NULL;
 	zp->z_xattr_parent = 0;
 	zp->z_vnode = NULL;
+	zp->z_has_seq = B_FALSE;
 
 	return (0);
 }
@@ -489,6 +490,21 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 		zfs_znode_free_kmem(zp);
 		return (NULL);
 	}
+
+	/*
+	 * Restore z_seq from SA_ZPL_SEQ when present, marking the file migrated
+	 * via the in-core z_has_seq (never persisted). Absence keeps the
+	 * default z_seq; FreeBSD's va_filerev never folded ctime in, so no
+	 * seed is needed across the upgrade.
+	 *
+	 * Note: after 'zfs rollback' this path restores the snapshot's
+	 * SA_ZPL_SEQ; va_filerev advances again from there on the next modify.
+	 */
+	if (zp->z_is_sa && sa_lookup(zp->z_sa_hdl, SA_ZPL_SEQ(zfsvfs),
+	    &zp->z_seq, sizeof (zp->z_seq)) == 0)
+		zp->z_has_seq = B_TRUE;
+	else
+		zp->z_has_seq = B_FALSE;
 
 	zp->z_projid = projid;
 	zp->z_mode = mode;
@@ -1187,6 +1203,25 @@ zfs_rezget(znode_t *zp)
 	}
 
 	zp->z_projid = projid;
+
+	/*
+	 * Recompute the in-core z_has_seq marker from disk. rezget reloads a
+	 * znode in place (rollback, recv); a stale TRUE marker must not survive
+	 * or ZFS_SEQ_MAY_GROW() would skip the grow reservation while
+	 * SA_ZPL_SEQ is gone on disk.
+	 *
+	 * Advance z_seq to signal that content may have changed (rollback, recv).
+	 * After recv the on-disk SA_ZPL_SEQ may be the sender's higher value, so
+	 * take MAX(in-core, on-disk) + 1 to stay above anything an NFS client
+	 * could have observed via the cold-load path, preserving change-cookie
+	 * monotonicity. The new value persists on the next modify.
+	 */
+	uint64_t tmp_seq = 0;
+	zp->z_has_seq = (zp->z_is_sa &&
+	    sa_lookup(zp->z_sa_hdl, SA_ZPL_SEQ(zfsvfs),
+	    &tmp_seq, sizeof (tmp_seq)) == 0);
+	zp->z_seq = MAX(zp->z_seq, tmp_seq) + 1;
+
 	zp->z_mode = mode;
 
 	if (gen != zp->z_gen) {
@@ -1668,7 +1703,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 	zilog_t *zilog = zfsvfs->z_log;
 	uint64_t mode;
 	uint64_t mtime[2], ctime[2];
-	sa_bulk_attr_t bulk[3];
+	sa_bulk_attr_t bulk[4];
 	int count = 0;
 	int error;
 
@@ -1695,7 +1730,7 @@ zfs_freesp(znode_t *zp, uint64_t off, uint64_t len, int flag, boolean_t log)
 		return (error);
 log:
 	tx = dmu_tx_create(zfsvfs->z_os);
-	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, ZFS_SEQ_MAY_GROW(zp));
 	zfs_sa_upgrade_txholds(tx, zp);
 	error = dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (error) {
@@ -1708,6 +1743,7 @@ log:
 	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_FLAGS(zfsvfs),
 	    NULL, &zp->z_pflags, 8);
 	zfs_tstamp_update_setup(zp, CONTENT_MODIFIED, mtime, ctime);
+	ZFS_PERSIST_SEQ(zp, bulk, count);
 	error = sa_bulk_update(zp->z_sa_hdl, bulk, count, tx);
 	ASSERT0(error);
 
