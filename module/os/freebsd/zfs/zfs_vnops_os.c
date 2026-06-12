@@ -2769,7 +2769,7 @@ zfs_setattr(znode_t *zp, vattr_t *vap, int flags, cred_t *cr, zidmap_t *mnt_ns)
 	}
 
 	if (attrzp) {
-		dmu_tx_hold_sa(tx, attrzp->z_sa_hdl, B_FALSE);
+		dmu_tx_hold_sa(tx, attrzp->z_sa_hdl, ZFS_SEQ_MAY_GROW(attrzp));
 	}
 
 	fuid_dirtied = zfsvfs->z_fuid_dirty;
