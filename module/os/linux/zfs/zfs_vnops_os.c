@@ -2621,14 +2621,10 @@ top:
 	if (mask != 0) {
 		zfs_log_setattr(zilog, tx, TX_SETATTR, zp, vap, mask, fuidp);
 		/*
-		 * Ensure that the z_seq is always incremented on setattr
-		 * operation. This is required for change accounting for
-		 * NFS clients.
-		 *
-		 * ATTR_MODE already increments via zfs_acl_chmod_setattr.
-		 * ATTR_SIZE already increments via zfs_freesp.
+		 * ATTR_MODE bumps via zfs_aclset_common -> tstamp_update_setup;
+		 * ATTR_SIZE goes through zfs_freesp(log=FALSE) which does not.
 		 */
-		if (!(mask & (ATTR_MODE | ATTR_SIZE)))
+		if (!(mask & ATTR_MODE))
 			zp->z_seq++;
 		ZFS_PERSIST_SEQ(zp, bulk, count);
 	}
@@ -4044,7 +4040,7 @@ zfs_dirty_inode(struct inode *ip, int flags)
 	dmu_tx_t	*tx;
 	uint64_t	mode, atime[2], mtime[2], ctime[2];
 	inode_timespec_t tmp_ts;
-	sa_bulk_attr_t	bulk[4];
+	sa_bulk_attr_t	bulk[5];
 	int		error = 0;
 	int		cnt = 0;
 
@@ -4070,7 +4066,7 @@ zfs_dirty_inode(struct inode *ip, int flags)
 
 	tx = dmu_tx_create(zfsvfs->z_os);
 
-	dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_FALSE);
+	dmu_tx_hold_sa(tx, zp->z_sa_hdl, ZFS_SEQ_MAY_GROW(zp));
 	zfs_sa_upgrade_txholds(tx, zp);
 
 	error = dmu_tx_assign(tx, DMU_TX_WAIT);
@@ -4097,6 +4093,8 @@ zfs_dirty_inode(struct inode *ip, int flags)
 	mode = ip->i_mode;
 
 	zp->z_mode = mode;
+	/* persist z_seq; callers bump it before zfs_mark_inode_dirty */
+	ZFS_PERSIST_SEQ(zp, bulk, cnt);
 
 	error = sa_bulk_update(zp->z_sa_hdl, bulk, cnt, tx);
 	mutex_exit(&zp->z_lock);

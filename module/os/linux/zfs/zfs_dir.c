@@ -977,6 +977,12 @@ zfs_drop_nlink_locked(znode_t *zp, dmu_tx_t *tx, boolean_t *unlinkedp)
 		zp->z_unlinked = B_TRUE;
 		clear_nlink(ZTOI(zp));
 		unlinked = B_TRUE;
+		/*
+		 * NFS observers must see nlink=0; advance change_cookie.
+		 * POSIX permits skipping the ctime stamp at nlink=0, and the
+		 * znode is destined for reap so persistence would be wasted.
+		 */
+		zp->z_seq++;
 	} else {
 		SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CTIME(zfsvfs),
 		    NULL, &ctime, sizeof (ctime));
