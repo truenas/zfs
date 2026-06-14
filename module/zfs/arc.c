@@ -1875,7 +1875,7 @@ arc_hdr_authenticate(arc_buf_hdr_t *hdr, spa_t *spa, uint64_t dsobj)
 
 	if (ret == 0)
 		arc_hdr_clear_flags(hdr, ARC_FLAG_NOAUTH);
-	else if (ret == ENOENT)
+	else if (ret == EACCES)
 		ret = 0;
 
 	if (free_abd)
@@ -11685,6 +11685,7 @@ EXPORT_SYMBOL(arc_write);
 EXPORT_SYMBOL(arc_read);
 EXPORT_SYMBOL(arc_buf_info);
 EXPORT_SYMBOL(arc_getbuf_func);
+EXPORT_SYMBOL(arc_buf_destroy);
 EXPORT_SYMBOL(arc_add_prune_callback);
 EXPORT_SYMBOL(arc_remove_prune_callback);
 
