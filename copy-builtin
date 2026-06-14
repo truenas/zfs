@@ -24,12 +24,13 @@ fi >&2
 make clean ||:
 make gitrev
 
-rm -rf "$KERNEL_DIR/include/zfs" "$KERNEL_DIR/fs/zfs"
+#rm -rf "$KERNEL_DIR/include/zfs" "$KERNEL_DIR/fs/zfs"
+rm -rf "$KERNEL_DIR/include/zfs"
 cp -R include "$KERNEL_DIR/include/zfs"
-cp -R module "$KERNEL_DIR/fs/zfs"
+#cp -R module "$KERNEL_DIR/fs/zfs"
 cp zfs_config.h "$KERNEL_DIR/include/zfs/"
 
-cat > "$KERNEL_DIR/fs/zfs/Kconfig" <<EOF
+cat > "$KERNEL_DIR/fs/zfs/module/Kconfig" <<EOF
 config ZFS
 	tristate "ZFS filesystem support"
 	depends on EFI_PARTITION
@@ -57,8 +58,8 @@ config ZFS_DEBUG
 	  If unsure, say N.
 EOF
 
-sed -i '/source "fs\/ext2\/Kconfig\"/i\source "fs/zfs/Kconfig"' "$KERNEL_DIR/fs/Kconfig"
-echo 'obj-$(CONFIG_ZFS) += zfs/' >> "$KERNEL_DIR/fs/Makefile"
+grep "fs/zfs/module/Kconfig" $KERNEL_DIR/fs/Kconfig || sed -i '/source "fs\/ext2\/Kconfig\"/i\source "fs/zfs/module/Kconfig"' "$KERNEL_DIR/fs/Kconfig"
+grep "CONFIG_ZFS) += zfs/module/" $KERNEL_DIR/fs/Makefile || echo 'obj-$(CONFIG_ZFS) += zfs/module/' >> "$KERNEL_DIR/fs/Makefile"
 
 echo "$0: done. now you can build the kernel with ZFS support." >&2
 echo "$0: make sure you enable ZFS support (CONFIG_ZFS) before building." >&2
