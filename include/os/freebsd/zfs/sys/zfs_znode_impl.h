@@ -60,7 +60,8 @@ extern "C" {
 	uint64_t		z_gid;          \
 	uint64_t		z_gen;          \
 	uint64_t		z_atime[2];     \
-	uint64_t		z_links;
+	uint64_t		z_links;	\
+	boolean_t	z_xattr_dir_absent; /* no xattr dir (cached) */
 
 #define	ZFS_LINK_MAX	UINT64_MAX
 

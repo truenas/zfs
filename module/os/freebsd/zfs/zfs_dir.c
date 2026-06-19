@@ -875,6 +875,9 @@ zfs_make_xattrdir(znode_t *zp, vattr_t *vap, znode_t **xvpp, cred_t *cr)
 
 	getnewvnode_drop_reserve();
 
+	/* Record that the file now has an xattr directory. */
+	zp->z_xattr_dir_absent = B_FALSE;
+
 	*xvpp = xzp;
 
 	return (0);
@@ -900,6 +903,16 @@ zfs_get_xattrdir(znode_t *zp, znode_t **xzpp, cred_t *cr, int flags)
 	znode_t		*xzp;
 	vattr_t		va;
 	int		error;
+
+	/*
+	 * Fast path: a file already known to have no xattr directory, when not
+	 * creating one, returns without taking the "" ZXATTR dirlock or doing
+	 * the SA_ZPL_XATTR lookup below.  z_xattr_dir_absent tracks this: it is
+	 * set when the lookup finds no directory and cleared when one is found
+	 * or created.
+	 */
+	if (!(flags & CREATE_XATTR_DIR) && zp->z_xattr_dir_absent)
+		return (SET_ERROR(ENOATTR));
 top:
 	error = zfs_dirent_lookup(zp, "", &xzp, ZXATTR);
 	if (error)
@@ -907,12 +920,24 @@ top:
 
 	if (xzp != NULL) {
 		*xzpp = xzp;
+		zp->z_xattr_dir_absent = B_FALSE;
 		return (0);
 	}
 
 
-	if (!(flags & CREATE_XATTR_DIR))
+	if (!(flags & CREATE_XATTR_DIR)) {
+		/*
+		 * Only learn the "absent" hint when serialized by z_xattr_lock.
+		 * The named-attribute lookup paths (LOOKUP_NAMED_ATTR) reach here
+		 * without that lock, so a lockless "no directory" store could
+		 * clobber a concurrent setextattr that just created one, leaving a
+		 * stale true.  The B_FALSE stores stay lockless: they only ever
+		 * force the full lookup, so they cannot cause a wrong result.
+		 */
+		if (!(flags & LOOKUP_NAMED_ATTR))
+			zp->z_xattr_dir_absent = B_TRUE;
 		return (SET_ERROR(ENOATTR));
+	}
 
 	if (zfsvfs->z_vfs->vfs_flag & VFS_RDONLY) {
 		return (SET_ERROR(EROFS));
