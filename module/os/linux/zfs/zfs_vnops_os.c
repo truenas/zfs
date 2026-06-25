@@ -2642,6 +2642,7 @@ top:
 	}
 out:
 	if (err == 0 && xattr_count > 0) {
+		ASSERT3S(xattr_count, <=, bulks);
 		err2 = sa_bulk_update(attrzp->z_sa_hdl, xattr_bulk,
 		    xattr_count, tx);
 		ASSERT0(err2);
@@ -2662,6 +2663,7 @@ out:
 		if (err == ERESTART)
 			goto top;
 	} else {
+		ASSERT3S(count, <=, bulks);
 		if (count > 0)
 			err2 = sa_bulk_update(zp->z_sa_hdl, bulk, count, tx);
 		dmu_tx_commit(tx);
@@ -3957,6 +3959,7 @@ zfs_putpage(struct inode *ip, struct page *pp, struct writeback_control *wbc,
 	    &zp->z_pflags, 8);
 	ZFS_PERSIST_SEQ(zp, bulk, cnt);
 
+	ASSERT3S(cnt, <=, ARRAY_SIZE(bulk));
 	err = sa_bulk_update(zp->z_sa_hdl, bulk, cnt, tx);
 
 	/*
@@ -4098,6 +4101,7 @@ zfs_dirty_inode(struct inode *ip, int flags)
 	/* persist z_seq; callers bump it before zfs_mark_inode_dirty */
 	ZFS_PERSIST_SEQ(zp, bulk, cnt);
 
+	ASSERT3S(cnt, <=, ARRAY_SIZE(bulk));
 	error = sa_bulk_update(zp->z_sa_hdl, bulk, cnt, tx);
 	mutex_exit(&zp->z_lock);
 
