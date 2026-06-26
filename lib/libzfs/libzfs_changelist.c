@@ -88,6 +88,80 @@ struct prop_changelist {
 };
 
 /*
+ * Deferred key unload for "zfs unmount -u" (MS_CRYPT).  changelist_prefix()
+ * pass 1 has already unmounted the subtree with MS_CRYPT stripped, so every
+ * wrapping-key refcount is now zero.  Walk the subtree child-first and
+ * unload the key of each node that is its own encryption root (unloading
+ * inline in pass 1 would EBUSY while a sibling is still mounted).  Returns
+ * 0, or -1 if any key fails to unload; the caller then re-mounts the subtree
+ * it just tore down.
+ */
+static int
+changelist_unload_keys(prop_changelist_t *clp)
+{
+	prop_changenode_t *cn;
+	uu_avl_walk_t *walk;
+	boolean_t encroot;
+	int ret = 0;
+
+	if ((walk = uu_avl_walk_start(clp->cl_tree, UU_WALK_ROBUST)) == NULL)
+		return (-1);
+
+	while ((cn = uu_avl_walk_next(walk)) != NULL && ret == 0) {
+		if (getzoneid() == GLOBAL_ZONEID && cn->cn_zoned)
+			continue;
+		if (ZFS_IS_VOLUME(cn->cn_handle))
+			continue;
+		if (zfs_prop_get_int(cn->cn_handle, ZFS_PROP_ENCRYPTION) ==
+		    ZIO_CRYPT_OFF)
+			continue;
+		zfs_refresh_properties(cn->cn_handle);
+		if (zfs_crypto_get_encryption_root(cn->cn_handle, &encroot,
+		    NULL) != 0) {
+			ret = -1;
+		} else if (encroot && zfs_prop_get_int(cn->cn_handle,
+		    ZFS_PROP_KEYSTATUS) == ZFS_KEYSTATUS_AVAILABLE &&
+		    zfs_crypto_unload_key(cn->cn_handle) != 0) {
+			ret = -1;
+		}
+	}
+	uu_avl_walk_end(walk);
+
+	return (ret);
+}
+
+/*
+ * Roll back the "zfs unmount -u" subtree after changelist_unload_keys()
+ * failed.  Re-mount parent-first every node pass 1 unmounted, so a parent
+ * never shadows a freshly re-mounted child.  We force the mount even when a
+ * surviving bind/second mount makes zfs_is_mounted() report the node mounted
+ * while its own mountpoint is gone (the stock changelist_postfix() would skip
+ * it); we refresh first and skip a node whose key we already unloaded, whose
+ * mount would only fail and mask the real key-unload error.
+ * changelist_postfix() then reshares the restored nodes.
+ */
+static void
+changelist_remount_subtree(prop_changelist_t *clp)
+{
+	prop_changenode_t *cn;
+	uu_avl_walk_t *walk;
+
+	if ((walk = uu_avl_walk_start(clp->cl_tree,
+	    UU_WALK_REVERSE | UU_WALK_ROBUST)) == NULL)
+		return;
+
+	while ((cn = uu_avl_walk_next(walk)) != NULL) {
+		if (!cn->cn_needpost || !cn->cn_mounted)
+			continue;
+		zfs_refresh_properties(cn->cn_handle);
+		if (zfs_prop_get_int(cn->cn_handle, ZFS_PROP_KEYSTATUS) !=
+		    ZFS_KEYSTATUS_UNAVAILABLE)
+			(void) zfs_mount(cn->cn_handle, NULL, 0);
+	}
+	uu_avl_walk_end(walk);
+}
+
+/*
  * If the property is 'mountpoint', go through and unmount filesystems as
  * necessary.  We don't do the same for 'sharenfs', because we can just re-share
  * with different options without interrupting service. We do handle 'sharesmb'
@@ -140,7 +214,7 @@ changelist_prefix(prop_changelist_t *clp)
 			switch (clp->cl_prop) {
 			case ZFS_PROP_MOUNTPOINT:
 				if (zfs_unmount(cn->cn_handle, NULL,
-				    clp->cl_mflags) != 0) {
+				    clp->cl_mflags & ~MS_CRYPT) != 0) {
 					ret = -1;
 					cn->cn_needpost = B_FALSE;
 				}
@@ -160,6 +234,12 @@ changelist_prefix(prop_changelist_t *clp)
 	if (commit_smb_shares)
 		zfs_commit_shares(smb);
 	uu_avl_walk_end(walk);
+
+	if (ret == 0 && (clp->cl_mflags & MS_CRYPT)) {
+		ret = changelist_unload_keys(clp);
+		if (ret == -1)
+			changelist_remount_subtree(clp);
+	}
 
 	if (ret == -1)
 		(void) changelist_postfix(clp);
