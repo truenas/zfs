@@ -506,6 +506,34 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 	}
 #endif
 
+#ifdef STATX_CHANGE_COOKIE
+	if (request_mask & STATX_CHANGE_COOKIE) {
+		/*
+		 * knfsd uses the STATX_CHANGE_COOKIE to surface to clients
+		 * change_info4 data, which is used to implement NFS client
+		 * name caching (see RFC 8881 Section 10.8). This number
+		 * should always increase with changes and should not be
+		 * reused. We cannot simply present ctime here because
+		 * ZFS uses a coarse timer to set them, which may cause
+		 * clients to fail to detect changes and invalidate cache.
+		 *
+		 * z_seq is a per-file 64-bit counter bumped on every change
+		 * and persisted across znode eviction, so it is presented
+		 * directly as a monotonic change cookie. Files that predate
+		 * persistence are seeded from ctime on load so the cookie
+		 * never moves backward across the upgrade.
+		 *
+		 * STATX_ATTR_CHANGE_MONOTONIC is advertised
+		 * to prevent knfsd from generating the change cookie
+		 * based on ctime. C.f. nfsd4_change_attribute in
+		 * fs/nfsd/nfsfh.c.
+		 */
+		stat->change_cookie = atomic_load_64(&zp->z_seq);
+		stat->attributes |= STATX_ATTR_CHANGE_MONOTONIC;
+		stat->result_mask |= STATX_CHANGE_COOKIE;
+	}
+#endif
+
 #ifdef STATX_DIOALIGN
 	if (request_mask & STATX_DIOALIGN) {
 		uint64_t align;
