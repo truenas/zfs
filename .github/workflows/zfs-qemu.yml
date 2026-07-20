@@ -15,6 +15,11 @@ on:
         required: false
         default: ""
         description: "(optional) Only run on this specific OS (like 'fedora44' or 'alpine3-23')"
+      kernel_train:
+        type: string
+        required: false
+        default: ""
+        description: "(optional) TrueNAS kernel train to install on Debian VMs ('master', '26', or 'none' for the distribution kernel)"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
@@ -28,6 +33,7 @@ jobs:
     outputs:
       test_os: ${{ steps.os.outputs.os }}
       ci_type: ${{ steps.os.outputs.ci_type }}
+      kernel_train: ${{ steps.kernel.outputs.kernel_train }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -88,6 +94,35 @@ jobs:
 
           echo "os=$os_json" | tee -a $GITHUB_OUTPUT
           echo "ci_type=$ci_type" | tee -a $GITHUB_OUTPUT
+      - name: Determine TrueNAS kernel train
+        id: kernel
+        run: |
+          # Debian VMs boot the TrueNAS production kernel published by the
+          # truenas/linux rolling releases (<train>-nightly).  Branches
+          # that feed a TrueNAS train use that train's kernel (PRs follow
+          # their base branch); everything else defaults to the master
+          # train.
+          if ${{ github.event_name == 'pull_request' }}; then
+            ref="${{ github.base_ref }}"
+          else
+            ref="${{ github.ref_name }}"
+          fi
+
+          case "$ref" in
+            truenas/zfs-2.4-release) train="master" ;;
+            stable/26)               train="26" ;;
+            *)                       train="master" ;;
+          esac
+
+          # Manual override from workflow_dispatch
+          if [ -n "${{ github.event.inputs.kernel_train }}" ]; then
+            train="${{ github.event.inputs.kernel_train }}"
+            if [ "$train" == "none" ]; then
+              train=""
+            fi
+          fi
+
+          echo "kernel_train=$train" | tee -a $GITHUB_OUTPUT
 
   qemu-vm:
     name: qemu-x86
@@ -124,6 +159,11 @@ jobs:
     - name: Install dependencies
       timeout-minutes: 60
       run: .github/workflows/scripts/qemu-3-deps.sh --poweroff ${{ matrix.os }} ${{ github.event.inputs.fedora_kernel_ver }}
+
+    - name: Install TrueNAS kernel
+      if: needs.test-config.outputs.kernel_train != '' && startsWith(matrix.os, 'debian')
+      timeout-minutes: 20
+      run: .github/workflows/scripts/qemu-tn-kernel.sh ${{ needs.test-config.outputs.kernel_train }}
 
     - name: Build modules
       timeout-minutes: 30

@@ -87,8 +87,10 @@ case "$OS" in
     # TODO: Overwrite OSv to debian13 for virt-install until it's added to osinfo
     OSv="debian12"
     URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
+    # Boot with secure-boot off like the testing VMs in qemu-5-setup.sh,
+    # so locally installed (unsigned) TrueNAS kernels can boot.
     OPTS[0]="--boot"
-    OPTS[1]="uefi=on"
+    OPTS[1]="firmware=efi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no"
     ;;
   fedora43)
     OSNAME="Fedora 43"
