@@ -94,3 +94,30 @@ Available via `specific_os` or `ZTS_OS_OVERRIDE`:
 - `labels.yml`: maintains PR status labels
 - `zfs-qemu-packages.yml`: manually dispatched, builds release RPMs or
   tests RPM installation from the ZFS yum repo
+
+### TrueNAS fork specifics
+
+The functional matrix is restricted with the `ZTS_OS_OVERRIDE`
+repository variable (currently `["debian13"]`).
+
+Builds and tests run against the TrueNAS production kernel instead of
+the distribution kernel.  The kernel image and development headers are
+consumed from the rolling releases published by
+[truenas/linux](https://github.com/truenas/linux/releases):
+
+| branch                    | train  | kernel release tag |
+|---------------------------|--------|--------------------|
+| `truenas/zfs-2.4-release` | master | `master-nightly`   |
+| `stable/26`               | 26     | `26-nightly`       |
+| any other branch          | master | `master-nightly`   |
+
+- `zfs-qemu.yml` installs the kernel and headers into the Debian VMs
+  and reboots into that kernel before building and testing
+  (`scripts/qemu-tn-kernel.sh`).  PRs follow their base branch; the
+  `kernel_train` dispatch input can force a train (or `none` for the
+  distribution kernel).
+- `ci.yml` builds the native debs in a `debian:trixie` container
+  against the TrueNAS kernel headers and, on every push to
+  `truenas/zfs-2.4-release` or `stable/26`, republishes them as a
+  rolling `<train>-nightly` GitHub release with `SHA256SUMS` and a
+  `manifest.json`, mirroring the truenas/linux kernel releases.

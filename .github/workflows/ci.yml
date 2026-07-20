@@ -3,18 +3,76 @@ name: CI
 on: [push]
 
 jobs:
+
   build-native-deb:
+
     runs-on: ubuntu-22.04
+    # The Debian release TrueNAS is based on
     container:
-      image: debian:testing
+      image: debian:trixie
+
+    # Container jobs default run steps to plain sh
+    defaults:
+      run:
+        shell: bash
+
     steps:
+      - name: Map branch to TrueNAS train
+        run: |
+          # All builds run against a rolling TrueNAS production kernel
+          # published by truenas/linux
+          # (https://github.com/truenas/linux/releases).  Branches that
+          # feed a TrueNAS train build against that train's kernel;
+          # everything else defaults to the master train.
+          case "$GITHUB_REF_NAME" in
+            truenas/zfs-2.4-release) train="master" ;;
+            stable/26)               train="26" ;;
+            *)                       train="master" ;;
+          esac
+          echo "TRAIN=$train" >> "$GITHUB_ENV"
+
       - name: Installing Dependencies
         run: |
-          apt update > /dev/null 2>&1
-          apt install -y linux-image-amd64 linux-headers-amd64 debhelper-compat devscripts > /dev/null 2>&1
+          apt-get update > /dev/null 2>&1
+          apt-get install -y ca-certificates curl git jq equivs \
+          debhelper-compat devscripts > /dev/null 2>&1
 
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+
+      - name: Install TrueNAS kernel headers
+        run: |
+          # Consume the rolling kernel release the same way downstream
+          # consumers are meant to: fetch manifest.json to learn the
+          # current kernel release and file names, then verify the debs
+          # against SHA256SUMS.
+          url="https://github.com/truenas/linux/releases/download/${TRAIN}-nightly"
+          mkdir -p /tmp/tn-kernel
+          cd /tmp/tn-kernel
+          if ! curl --fail -LSs -O "$url/manifest.json" ; then
+            echo "ERROR: no ${TRAIN}-nightly kernel release published at $url yet"
+            exit 1
+          fi
+          curl --fail -LSs -O "$url/SHA256SUMS"
+          release=$(jq -r '.release' manifest.json)
+          echo "TrueNAS $TRAIN kernel: $release"
+          for deb in $(jq -r '.debs[]' manifest.json); do
+            case "$deb" in
+              linux-headers-*)
+                echo "Downloading $deb"
+                curl --fail -LSs -O "$url/$deb"
+                ;;
+            esac
+          done
+          sha256sum -c --ignore-missing SHA256SUMS
+          apt-get install -y ./linux-headers-*.deb
+          # The TrueNAS kernel packages carry version-free names, so
+          # locate the header tree through the build symlink the headers
+          # package ships.
+          ksrc=$(readlink -f "/lib/modules/$release/build")
+          test -f "$ksrc/Module.symvers"
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+          echo "KSRC=$ksrc" >> "$GITHUB_ENV"
 
       - name: Build deb package
         run: |
@@ -25,16 +83,31 @@ jobs:
           cp -a contrib/debian debian
           sed 's/@CFGOPTS@/--enable-debuginfo/g' debian/rules.in > debian/rules
           chmod +x debian/rules
-          dch -b -M --force-distribution --distribution bullseye-truenas-unstable 'Tagged from zfs CI'
+          # Version the rolling debs above the release build they are
+          # based on so consecutive builds stay upgradeable.
+          dch -b -M \
+            -v "$(dpkg-parsechangelog -S Version)+truenas.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER" \
+            --force-distribution --distribution "${TRAIN}-nightly" \
+            "Rolling build of $GITHUB_REF_NAME at ${GITHUB_SHA::12}"
           debuild -us -uc -b
-          debian/rules override_dh_binary-modules
+          # Build the kernel modules against the TrueNAS kernel, the
+          # same way scale-build does (KVERS/KSRC/KOBJ).
+          debian/rules override_dh_binary-modules \
+            KVERS="$KERNEL_RELEASE" KSRC="$KSRC" KOBJ="$KSRC"
 
       - name: Create artifacts dir
         run: mkdir artifacts
         if: success()
 
       - name: Move artifacts
-        run: mv ../*.deb artifacts
+        run: |
+          mv ../*.deb artifacts
+          jq -n \
+            --arg train "$TRAIN" \
+            --arg zfs_version "$(dpkg-parsechangelog -S Version)" \
+            --arg kernel_release "$KERNEL_RELEASE" \
+            '{train: $train, zfs_version: $zfs_version, kernel_release: $kernel_release}' \
+            > artifacts/buildinfo.json
         if: success()
 
       - uses: actions/upload-artifact@v4
@@ -42,3 +115,126 @@ jobs:
           name: zfs-native
           path: artifacts
         if: success()
+
+  # On every merge to truenas/zfs-2.4-release or stable/26, republish the
+  # native debs built above (against the TrueNAS production kernel) as
+  # assets of a per-train rolling prerelease (master-nightly and
+  # 26-nightly respectively), mirroring the truenas/linux kernel
+  # releases.  Release assets (unlike Actions artifacts) never expire and
+  # are downloadable anonymously at stable URLs:
+  #   https://github.com/truenas/zfs/releases/download/master-nightly/<file>
+  # Consumers should fetch manifest.json first to learn the current file
+  # names, then verify downloads against SHA256SUMS.
+  publish_latest_debs:
+
+    needs: build-native-deb
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/truenas/zfs-2.4-release' || github.ref == 'refs/heads/stable/26') }}
+
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: write
+      actions: read
+
+    concurrency:
+      group: publish-latest-debs-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+
+      - name: Download native debs
+        uses: actions/download-artifact@v4
+        with:
+          name: zfs-native
+          path: zfs-native
+
+      - name: Assemble release assets
+        run: |
+          mkdir release-assets
+          # TrueNAS does not ship the dkms or dracut packages; skip them
+          # to keep the release lean.
+          for deb in zfs-native/*.deb; do
+            case "$(basename "$deb")" in
+              openzfs-zfs-dkms_*|openzfs-zfs-dracut_*)
+                echo "Skipping $(basename "$deb")"
+                ;;
+              *)
+                cp "$deb" release-assets/
+                ;;
+            esac
+          done
+          echo "KERNEL_RELEASE=$(jq -r '.kernel_release' zfs-native/buildinfo.json)" >> "$GITHUB_ENV"
+          echo "ZFS_VERSION=$(jq -r '.zfs_version' zfs-native/buildinfo.json)" >> "$GITHUB_ENV"
+
+      - name: Generate checksums and manifest
+        run: |
+          cd release-assets
+          sha256sum *.deb > SHA256SUMS
+          ls *.deb | jq -R . | jq -s \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg commit "$GITHUB_SHA" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg zfs_version "$ZFS_VERSION" \
+            --arg kernel_release "$KERNEL_RELEASE" \
+            '{
+              branch: $branch,
+              commit: $commit,
+              date: $date,
+              run_url: $run_url,
+              zfs_version: $zfs_version,
+              kernel_release: $kernel_release,
+              debs: .
+            }' > manifest.json
+          cat manifest.json
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # If the branch has already moved past this commit, let the run
+          # building the new tip publish instead - the release must never
+          # go back to older debs.
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$GITHUB_REF_NAME" --jq .object.sha)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "$GITHUB_REF_NAME is now at $tip, not publishing $GITHUB_SHA"
+            exit 0
+          fi
+
+          # Map the branch to its TrueNAS train.  Exact matches only: if a
+          # branch is added to this job's if-gate it must be mapped here
+          # too, otherwise two branches could fight over one release.
+          case "$GITHUB_REF_NAME" in
+            truenas/zfs-2.4-release) train="master" ;;
+            stable/26)               train="26" ;;
+            *)
+              echo "ERROR: no train mapping for branch $GITHUB_REF_NAME"
+              exit 1
+              ;;
+          esac
+          tag="${train}-nightly"
+
+          {
+            echo "Rolling native deb build of \`$GITHUB_REF_NAME\` at $GITHUB_SHA."
+            echo
+            echo "- ZFS version: \`$ZFS_VERSION\`"
+            echo "- Built against kernel: \`$KERNEL_RELEASE\`"
+            echo "  from https://github.com/truenas/linux/releases/tag/$tag"
+            echo "- Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "The tag and all assets are replaced on every merge to"
+            echo "\`$GITHUB_REF_NAME\`. Fetch \`manifest.json\` to see what is"
+            echo "currently published and verify downloads against \`SHA256SUMS\`."
+          } > release-notes.md
+
+          gh release delete "$tag" --cleanup-tag --yes || true
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" 2>/dev/null || true
+          gh release create "$tag" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "TrueNAS $train OpenZFS debs (nightly)" \
+            --notes-file release-notes.md \
+            release-assets/*.deb \
+            release-assets/SHA256SUMS \
+            release-assets/manifest.json
