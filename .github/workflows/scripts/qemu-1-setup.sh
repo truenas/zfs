@@ -19,13 +19,14 @@ unneeded="microsoft-edge-stable|azure-cli|google-cloud|google-chrome-stable|"\
 "powershell|julia|swift|miniconda|chromium"
 # refresh package index before removing packages
 sudo apt-get -y update
-sudo apt-get -y remove $(dpkg-query -f '${binary:Package}\n' -W | grep -E "'$unneeded'")
+sudo apt-get -y remove $(dpkg-query -f '${binary:Package}\n' -W | grep -E "$unneeded")
 sudo apt-get -y autoremove
 
-# Next, remove unneeded files in /usr.  This frees up an additional 25GB.
+# Next, remove unneeded files in /usr and the preinstalled tool cache.
+# This frees up an additional 35GB.
 sudo rm -fr /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup \
         /usr/share/swift /usr/local/share/powershell /usr/local/julia* \
-        /usr/share/miniconda /usr/local/share/chromium
+        /usr/share/miniconda /usr/local/share/chromium /opt/hostedtoolcache
 echo "Disk space after:"
 df -h /
 
@@ -130,7 +131,25 @@ if [ -e /dev/disk/cloud/azure_resource-part1 ] ; then
   SWAP=$DISK-part1
 else
   echo "We have a single 150GB block device"
-  sudo fallocate -l 72G /test.ssd2
+
+  # Everything is carved out of the root filesystem here, and the
+  # runner images don't always leave enough free space for the full
+  # 72GiB pool file plus the 16GiB swap file.  Filling / to the last
+  # byte kills the runner (it can no longer write its own logs), so
+  # size the pool file to what is actually available, keeping a
+  # 10GiB reserve for the runner, logs and packages, and fail loudly
+  # when even a minimal pool does not fit.
+  avail=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+  ssd2_size=$((avail - 16 - 10))
+  if [ $ssd2_size -gt 72 ]; then
+    ssd2_size=72
+  elif [ $ssd2_size -lt 40 ]; then
+    echo "ERROR: only ${avail}GiB free on /, not enough for a test pool"
+    df -h /
+    exit 1
+  fi
+  echo "Using a ${ssd2_size}GiB pool file (${avail}GiB available)"
+  sudo fallocate -l ${ssd2_size}G /test.ssd2
   SWAP=/swapfile.ssd
   sudo fallocate -l 16G $SWAP
   sudo chmod 600 $SWAP
@@ -143,6 +162,9 @@ sudo swapon $SWAP
 
 echo "Block devices:"
 lsblk
+
+echo "Free space on /:"
+df -h /
 
 # adjust zfs module parameter and create pool
 ARC_MIN=$((1024*1024*256))

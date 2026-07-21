@@ -1,0 +1,135 @@
+# TrueNAS-only workflow, not present upstream.  Runs the zfs-qemu test
+# sequence on the Debian 13 image rebooted into the TrueNAS production
+# kernel (debian13-tn), alongside the unmodified upstream zfs-qemu
+# workflow which keeps testing the stock Debian kernel.  Comparing the
+# two attributes a failure to the TrueNAS kernel (fails only here) or
+# to the ZFS change itself (fails in both).
+name: zfs-qemu-tn
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      kernel_train:
+        type: string
+        required: false
+        default: ""
+        description: "(optional) TrueNAS kernel train to test ('master' or '26'; default: mapped from the branch)"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  test-config:
+    name: Setup
+    if: github.event_name == 'pull_request' || github.repository != 'openzfs/zfs'
+    runs-on: ubuntu-24.04
+    outputs:
+      ci_type: ${{ steps.os.outputs.ci_type }}
+      kernel_train: ${{ steps.kernel.outputs.kernel_train }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Generate CI type
+        id: os
+        run: |
+          ci_type="default"
+
+          # determine CI type when running on PR
+          if ${{ github.event_name == 'pull_request' }}; then
+            head=${{ github.event.pull_request.head.sha }}
+            base=${{ github.event.pull_request.base.sha }}
+            read ci_type ci_source <<< "$(python3 .github/workflows/scripts/generate-ci-type.py $head $base)"
+          fi
+
+          echo "ci_type=$ci_type" | tee -a $GITHUB_OUTPUT
+      - name: Determine TrueNAS kernel train
+        id: kernel
+        run: |
+          # The VM boots the TrueNAS production kernel published by the
+          # truenas/linux rolling releases (<train>-nightly).  Branches
+          # that feed a TrueNAS train use that train's kernel (PRs
+          # follow their base branch); everything else defaults to the
+          # master train.
+          if ${{ github.event_name == 'pull_request' }}; then
+            ref="${{ github.base_ref }}"
+          else
+            ref="${{ github.ref_name }}"
+          fi
+
+          case "$ref" in
+            truenas/zfs-2.4-release) train="master" ;;
+            stable/26)               train="26" ;;
+            *)                       train="master" ;;
+          esac
+
+          # Manual override from workflow_dispatch
+          if [ -n "${{ github.event.inputs.kernel_train }}" ]; then
+            train="${{ github.event.inputs.kernel_train }}"
+          fi
+
+          echo "kernel_train=$train" | tee -a $GITHUB_OUTPUT
+
+  qemu-vm-tn:
+    name: qemu-x86 (debian13-tn)
+    needs: [ test-config ]
+    if: >-
+      (github.event_name == 'pull_request' ||
+      github.repository != 'openzfs/zfs') &&
+      needs.test-config.outputs.ci_type != 'docs'
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+
+    - name: Setup QEMU
+      timeout-minutes: 60
+      run: .github/workflows/scripts/qemu-1-setup.sh
+
+    - name: Start build machine
+      timeout-minutes: 10
+      run: .github/workflows/scripts/qemu-2-start.sh debian13-tn
+
+    - name: Install dependencies
+      timeout-minutes: 60
+      run: .github/workflows/scripts/qemu-3-deps.sh --poweroff debian13-tn
+
+    - name: Install TrueNAS kernel
+      timeout-minutes: 20
+      run: .github/workflows/scripts/qemu-tn-kernel.sh ${{ needs.test-config.outputs.kernel_train }}
+
+    - name: Build modules
+      timeout-minutes: 30
+      run: .github/workflows/scripts/qemu-4-build.sh --poweroff --enable-debug debian13-tn
+
+    - name: Setup testing machines
+      timeout-minutes: 5
+      run: .github/workflows/scripts/qemu-5-setup.sh
+
+    - name: Run tests
+      timeout-minutes: 270
+      run: .github/workflows/scripts/qemu-6-tests.sh
+      env:
+        CI_TYPE: ${{ needs.test-config.outputs.ci_type }}
+
+    - name: Prepare artifacts
+      if: always()
+      timeout-minutes: 10
+      run: .github/workflows/scripts/qemu-7-prepare.sh
+
+    - uses: actions/upload-artifact@v7
+      id: artifact-upload
+      if: always()
+      with:
+        name: Logs-functional-debian13-tn
+        path: /tmp/qemu-debian13-tn.tar.bz2
+        archive: false
+        if-no-files-found: ignore
+
+    - name: Test Summary
+      if: always()
+      run: .github/workflows/scripts/qemu-8-summary.sh '${{ steps.artifact-upload.outputs.artifact-url }}'

@@ -97,12 +97,19 @@ Available via `specific_os` or `ZTS_OS_OVERRIDE`:
 
 ### TrueNAS fork specifics
 
-The functional matrix is restricted with the `ZTS_OS_OVERRIDE`
-repository variable (currently `["debian13"]`).
+The upstream workflows are kept as close to openzfs/zfs as possible;
+TrueNAS additions live in separate fork-only files.  `zfs-qemu.yml`
+itself is unmodified: its matrix is restricted to `["debian13"]` with
+the `ZTS_OS_OVERRIDE` repository variable and keeps testing the stock
+Debian kernel.
 
-Builds and tests run against the TrueNAS production kernel instead of
-the distribution kernel.  The kernel image and development headers are
-consumed from the rolling releases published by
+`zfs-qemu-tn.yml` (fork-only) runs the same build and test sequence on
+the same Debian 13 image rebooted into the TrueNAS production kernel
+(OS name `debian13-tn`, installed by `scripts/qemu-tn-kernel.sh`).  A
+failure only in zfs-qemu-tn points at the TrueNAS kernel; a failure in
+both workflows points at the ZFS change (or Debian) itself.  The
+kernel image and development headers are consumed from the rolling
+releases published by
 [truenas/linux](https://github.com/truenas/linux/releases):
 
 | branch                    | train  | kernel release tag |
@@ -111,11 +118,8 @@ consumed from the rolling releases published by
 | `stable/26`               | 26     | `26-nightly`       |
 | any other branch          | master | `master-nightly`   |
 
-- `zfs-qemu.yml` installs the kernel and headers into the Debian VMs
-  and reboots into that kernel before building and testing
-  (`scripts/qemu-tn-kernel.sh`).  PRs follow their base branch; the
-  `kernel_train` dispatch input can force a train (or `none` for the
-  distribution kernel).
+- PRs follow their base branch; the `kernel_train` dispatch input of
+  zfs-qemu-tn.yml can force a train.
 - `ci.yml` builds the native debs in a `debian:trixie` container
   against the TrueNAS kernel headers and, on every push to
   `truenas/zfs-2.4-release` or `stable/26`, republishes them as a

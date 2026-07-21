@@ -39,6 +39,13 @@
 
 verify_runnable "both"
 
+# LUKS is layered on the kernel's device-mapper crypt target, which
+# not every kernel provides (CONFIG_DM_CRYPT).  dm_crypt may be built
+# in or a loadable module; modprobe succeeds for both.
+if ! modprobe dm_crypt 2>/dev/null; then
+	log_unsupported "Kernel does not provide the dm-crypt device-mapper target"
+fi
+
 VDEV=$(mktemp --suffix=luks_sanity)
 TESTPOOL=testpool
 

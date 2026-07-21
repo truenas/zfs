@@ -26,7 +26,7 @@ case "$OS" in
     # FreeBSD needs only 6GiB
     RAM=6
     ;;
-  debian13)
+  debian13*)
     RAM=8
     # Boot Debian 13 with uefi=on and secureboot=off (ZFS Kernel Module not signed)
     OPTS[0]="--boot"
