@@ -19,13 +19,14 @@ unneeded="microsoft-edge-stable|azure-cli|google-cloud|google-chrome-stable|"\
 "powershell|julia|swift|miniconda|chromium"
 # refresh package index before removing packages
 sudo apt-get -y update
-sudo apt-get -y remove $(dpkg-query -f '${binary:Package}\n' -W | grep -E "'$unneeded'")
+sudo apt-get -y remove $(dpkg-query -f '${binary:Package}\n' -W | grep -E "$unneeded")
 sudo apt-get -y autoremove
 
-# Next, remove unneeded files in /usr.  This frees up an additional 25GB.
+# Next, remove unneeded files in /usr and the preinstalled tool cache.
+# This frees up an additional 35GB.
 sudo rm -fr /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup \
         /usr/share/swift /usr/local/share/powershell /usr/local/julia* \
-        /usr/share/miniconda /usr/local/share/chromium
+        /usr/share/miniconda /usr/local/share/chromium /opt/hostedtoolcache
 echo "Disk space after:"
 df -h /
 
@@ -96,43 +97,95 @@ sudo swapoff -a
 # lrwxrwxrwx 1 root root 11 Jan 29 18:07 azure_root-part14 -> ../../sda14
 # lrwxrwxrwx 1 root root 11 Jan 29 18:07 azure_root-part15 -> ../../sda15
 #
-# If we have the azure_resource-part1 partition, umount it, partition it, and
-# use it as our ZFS disk and swap partition.  If not, just create a file VDEV
-# and swap file and use that instead.
+# If we have an ephemeral resource disk, umount it, partition it, and use it
+# as our ZFS disk and swap partition.  If not, create a file VDEV and swap
+# file on the root filesystem instead.  Newer runner VMs expose the resource
+# disk as NVMe without the azure_resource symlinks, or have none at all.
+echo "Initial block devices:"
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINTS
+
+RESOURCE=""
+if [ -e /dev/disk/cloud/azure_resource ] ; then
+  RESOURCE=$(readlink -f /dev/disk/cloud/azure_resource)
+fi
+
+# ... or the disk backing /mnt, unless something else is mounted from it too
+if [ -z "$RESOURCE" ] ; then
+  MNT_SRC=$(findmnt -n -o SOURCE --mountpoint /mnt || true)
+  case "$MNT_SRC" in
+  /dev/*)
+    PARENT=$(lsblk -n -o PKNAME "$MNT_SRC" | head -n1)
+    RESOURCE="${PARENT:+/dev/$PARENT}"
+    RESOURCE="${RESOURCE:-$MNT_SRC}"
+    if [ -n "$(lsblk -n -o MOUNTPOINTS $RESOURCE | grep -v '^/mnt$' | tr -d '[:space:]')" ] ; then
+      RESOURCE=""
+    fi
+    ;;
+  esac
+fi
+
+# ... or any whole disk of at least 60GiB with nothing mounted from it
+if [ -z "$RESOURCE" ] ; then
+  for dev in $(lsblk -dn -o NAME,TYPE | awk '$2 == "disk" {print "/dev/"$1}'); do
+    test "$(lsblk -dbn -o SIZE $dev)" -ge $((60*1024*1024*1024)) || continue
+    test -z "$(lsblk -n -o MOUNTPOINTS $dev | tr -d '[:space:]')" || continue
+    RESOURCE="$dev"
+    break
+  done
+fi
 
 # remove default swapfile and /mnt
-if [ -e /dev/disk/cloud/azure_resource-part1 ] ; then
-  sudo umount -l /mnt
-  DISK="/dev/disk/cloud/azure_resource-part1"
-  sudo sed -e "s|^$DISK.*||g" -i /etc/fstab
-  sudo wipefs -aq $DISK
+if [ -n "$RESOURCE" ] ; then
+  sudo umount -l /mnt 2>/dev/null || true
+  sudo sed -i '\|^[^#].*[[:space:]]/mnt[[:space:]]|d' /etc/fstab
+  sudo wipefs -aq ${RESOURCE}?* $RESOURCE 2>/dev/null || true
   sudo systemctl daemon-reload
 fi
 
 sudo modprobe loop
 sudo modprobe zfs
 
-if [ -e /dev/disk/cloud/azure_resource-part1 ] ; then
-  echo "We have two 75GB block devices"
+if [ -n "$RESOURCE" ] ; then
+  echo "Using the ephemeral resource disk $RESOURCE"
   # partition the disk as needed
-  DISK="/dev/disk/cloud/azure_resource"
-  sudo sgdisk --zap-all $DISK
+  sudo sgdisk --zap-all $RESOURCE
   sudo sgdisk -p \
    -n 1:0:+16G -c 1:"swap" \
    -n 2:0:0    -c 2:"tests" \
-   $DISK
+   $RESOURCE
+  sudo udevadm settle
   sync
   sleep 1
 
   sudo fallocate -l 12G /test.ssd2
-  DISKS="$DISK-part2 /test.ssd2"
+  # SCSI and NVMe name partitions differently - go by partlabel
+  DISKS="/dev/disk/by-partlabel/tests /test.ssd2"
 
-  SWAP=$DISK-part1
+  SWAP="/dev/disk/by-partlabel/swap"
 else
-  echo "We have a single 150GB block device"
-  sudo fallocate -l 72G /test.ssd2
+  echo "No usable resource disk found - using the root filesystem"
+
+  # Fit pool and swap to the machine - newer VMs have only ~55GiB free.
+  # Keep 8GiB for the runner: filling / to the last byte kills it.
+  avail=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+  if [ $avail -ge 88 ]; then
+    swap_size=16
+  else
+    swap_size=8
+  fi
+  ssd2_size=$((avail - swap_size - 8))
+  if [ $ssd2_size -gt 72 ]; then
+    ssd2_size=72
+  elif [ $ssd2_size -lt 32 ]; then
+    echo "ERROR: only ${avail}GiB free on /, not enough for a test pool"
+    df -h /
+    exit 1
+  fi
+  echo "Using a ${ssd2_size}GiB pool file and ${swap_size}GiB swap" \
+    "(${avail}GiB available)"
+  sudo fallocate -l ${ssd2_size}G /test.ssd2
   SWAP=/swapfile.ssd
-  sudo fallocate -l 16G $SWAP
+  sudo fallocate -l ${swap_size}G $SWAP
   sudo chmod 600 $SWAP
   DISKS="/test.ssd2"
 fi
@@ -143,6 +196,9 @@ sudo swapon $SWAP
 
 echo "Block devices:"
 lsblk
+
+echo "Free space on /:"
+df -h /
 
 # adjust zfs module parameter and create pool
 ARC_MIN=$((1024*1024*256))

@@ -90,6 +90,15 @@ case "$OS" in
     OPTS[0]="--boot"
     OPTS[1]="uefi=on"
     ;;
+  debian13-tn)
+    OSNAME="Debian 13 (TrueNAS kernel)"
+    OSv="debian12"
+    URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
+    # Boot with secure-boot off like the testing VMs in qemu-5-setup.sh,
+    # so the locally installed (unsigned) TrueNAS kernel can boot.
+    OPTS[0]="--boot"
+    OPTS[1]="firmware=efi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no"
+    ;;
   fedora43)
     OSNAME="Fedora 43"
     OSv="fedora-unknown"
