@@ -43,6 +43,7 @@
 extern "C" {
 #endif
 
+#ifdef METASLAB_TRACE
 /*
  * Metaslab allocation tracing record.
  */
@@ -56,6 +57,7 @@ typedef struct metaslab_alloc_trace {
 	uint64_t			mat_offset;
 	int					mat_allocator;
 } metaslab_alloc_trace_t;
+#endif
 
 /*
  * Used by the metaslab allocation tracing facility to indicate
@@ -330,7 +332,7 @@ struct metaslab_group {
  *
  * As the space map grows (as a result of the appends) it will
  * eventually become space-inefficient.  When the metaslab's in-core
- * free tree is zfs_condense_pct/100 times the size of the minimal
+ * free tree is zfs_metaslab_condense_pct/100 times the size of the minimal
  * on-disk representation, we rewrite it in its minimized form.  If a
  * metaslab needs to condense then we must set the ms_condensing flag to
  * ensure that allocations are not performed on the metaslab that is
