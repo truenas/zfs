@@ -1448,6 +1448,8 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/deadman/deadman_zio.ksh \
 	functional/dedup/cleanup.ksh \
 	functional/dedup/setup.ksh \
+	functional/dedup/dedup_bclone.ksh \
+	functional/dedup/dedup_bclone_pruned.ksh \
 	functional/dedup/dedup_fdt_create.ksh \
 	functional/dedup/dedup_fdt_import.ksh \
 	functional/dedup/dedup_fdt_pacing.ksh \
@@ -1884,6 +1886,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/removal/removal_with_faulted.ksh \
 	functional/removal/removal_with_ganging.ksh \
 	functional/removal/removal_with_hole.ksh \
+	functional/removal/removal_with_missing_log.ksh \
 	functional/removal/removal_with_indirect.ksh \
 	functional/removal/removal_with_remove.ksh \
 	functional/removal/removal_with_scrub.ksh \

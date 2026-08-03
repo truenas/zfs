@@ -1454,6 +1454,18 @@ zpl_permission(struct inode *ip, int mask)
 #endif
 	}
 
+#ifdef SB_NFSV4ACL
+	/*
+	 * By default trivial ACL (one that can be reduced to mode without
+	 * loss of information) grants ACE_WRITE_OWNER. If we have gotten to
+	 * this point, the kernel has already checked chown_ok() in the linux
+	 * vfs and *failed*. We want to keep normal posix behavior and so
+	 * return -EPERM here.
+	 */
+	if ((ITOZ(ip)->z_pflags & ZFS_ACL_TRIVIAL) && (mask & MAY_WRITE_OWNER))
+		return (-EPERM);
+#endif
+
 	for (i = 0; i < ARRAY_SIZE(mask2zfs); i++) {
 		if (mask & mask2zfs[i].kmask) {
 			to_check |= mask2zfs[i].zfsperm;
