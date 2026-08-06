@@ -25,7 +25,7 @@ set -eu
 TRAIN="$1"
 
 rc=0
-entry=$(.github/workflows/scripts/resolve-train.sh train "$TRAIN") || rc=$?
+entry=$(.github/workflows/scripts/resolve-train.py train "$TRAIN") || rc=$?
 if [ "$rc" -eq 3 ]; then
   echo "ERROR: no .github/trains.json entry for train '$TRAIN'"
   exit 1
@@ -39,7 +39,7 @@ sudo virsh start openzfs
 .github/workflows/scripts/qemu-wait-for-vm.sh vm0
 
 scp .github/workflows/scripts/qemu-tn-kernel-vm.sh \
-    .github/workflows/scripts/fetch-tn-kernel.sh zfs@vm0:
+    .github/workflows/scripts/fetch-tn-kernel.py zfs@vm0:
 PID=$(pidof /usr/bin/qemu-system-x86_64)
 ssh zfs@vm0 '$HOME/qemu-tn-kernel-vm.sh' "$KERNEL_REPO" "$KERNEL_TAG"
 
