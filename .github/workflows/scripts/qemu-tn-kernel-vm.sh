@@ -26,7 +26,7 @@ export DEBIAN_FRONTEND="noninteractive"
 echo "##[group]Download TrueNAS kernel ($KERNEL_REPO $KERNEL_TAG)"
 # Only the image and headers are needed; skip the libc-dev, perf and
 # any debug packages.
-"$(dirname "$0")/fetch-tn-kernel.sh" "$KERNEL_REPO" "$KERNEL_TAG" \
+"$(dirname "$0")/fetch-tn-kernel.py" "$KERNEL_REPO" "$KERNEL_TAG" \
   /tmp/tn-kernel 'linux-image-*' 'linux-headers-*' '!linux-image-*-dbg_*'
 cd /tmp/tn-kernel
 RELEASE=$(jq -r '.release' manifest.json)

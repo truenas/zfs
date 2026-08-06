@@ -7,7 +7,19 @@
 name: zfs-qemu-tn
 
 on:
+  # A push to a branch with an open PR fires both push and
+  # pull_request, and both runs land in the same concurrency group
+  # below, where cancel-in-progress kills whichever started first.  The
+  # two are not interchangeable either: the push run resolves the train
+  # from the head branch, the pull_request run from the base.  Only the
+  # branches paired in .github/trains.json need the push trigger - they
+  # are merge targets, never PR heads - and every other branch is
+  # covered by its pull request.  on: cannot read trains.json, so keep
+  # this list in step with the branch names there.
   push:
+    branches:
+      - truenas/zfs-2.4-release
+      - stable/26
   pull_request:
   workflow_dispatch:
     inputs:
@@ -60,7 +72,7 @@ jobs:
           # train use that train's kernel (PRs follow their base
           # branch); everything else defaults to the default_train
           # pairing.
-          resolve=.github/workflows/scripts/resolve-train.sh
+          resolve=.github/workflows/scripts/resolve-train.py
           rc=0
           if [ -n "$TRAIN_OVERRIDE" ]; then
             entry=$("$resolve" train "$TRAIN_OVERRIDE") || rc=$?
@@ -78,7 +90,7 @@ jobs:
             entry=$("$resolve" branch "$ref") || rc=$?
             # Status 3 just means the branch is not paired with a
             # train of its own; anything else is a broken config
-            # resolve-train.sh has already explained.
+            # resolve-train.py has already explained.
             if [ "$rc" -eq 3 ]; then
               rc=0
               entry=$("$resolve" default)

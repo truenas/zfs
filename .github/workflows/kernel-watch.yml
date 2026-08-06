@@ -47,11 +47,11 @@ jobs:
       - name: List the watched trains
         id: config
         run: |
-          # resolve-train.sh validates the whole file - required
+          # resolve-train.py validates the whole file - required
           # fields, value shapes, unique train and branch names, a
           # resolvable default_train - so a bad edit is caught here
           # instead of six hours later inside a download URL.
-          .github/workflows/scripts/resolve-train.sh default > /dev/null
+          .github/workflows/scripts/resolve-train.py default > /dev/null
           echo "trains=$(jq -c '[.trains[] | {train, branch}]' \
             .github/trains.json)" | tee -a "$GITHUB_OUTPUT"
 
@@ -112,7 +112,7 @@ jobs:
 
           rc=0
           entry=$(TRAINS_JSON=branch-trains.json \
-            .github/workflows/scripts/resolve-train.sh train "$TRAIN") || rc=$?
+            .github/workflows/scripts/resolve-train.py train "$TRAIN") || rc=$?
           if [ "$rc" -eq 3 ]; then
             echo "::warning::$BRANCH has no trains[] entry for $TRAIN," \
               "so nothing there publishes $TRAIN-nightly."

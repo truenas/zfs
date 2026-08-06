@@ -107,7 +107,7 @@ truth: each `trains[]` entry pairs one ZFS branch with the rolling
 TrueNAS kernel release (`kernel_repo` + `kernel_tag`) it is built,
 tested and published against.  Unlisted branches use the
 `default_train` pairing and publish nothing.  Every lookup goes
-through `scripts/resolve-train.sh`, which validates the whole file -
+through `scripts/resolve-train.py`, which validates the whole file -
 required fields, value shapes, unique train and branch names, a
 resolvable `default_train` - so a bad edit fails where it is made.
 Consumers:
@@ -127,7 +127,8 @@ Consumers:
   `scripts/qemu-tn-kernel.sh`).  Fails only here: suspect the TrueNAS
   kernel; fails in zfs-qemu too: suspect the ZFS change.  PRs follow
   their base branch; the `kernel_train` dispatch input can force any
-  configured train.
+  configured train.  Runs on every pull request, but on push only for
+  the paired branches, so a PR branch is not tested twice over.
 
 A branch always builds, tests and publishes from **its own** copy of
 trains.json, and kernel-watch reads each pairing back from that same

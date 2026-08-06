@@ -17,7 +17,7 @@
     "not onboarded rather than built.",
     "",
     "Every branch and every train may appear at most once, or two",
-    "builds would fight over one release; scripts/resolve-train.sh",
+    "builds would fight over one release; scripts/resolve-train.py",
     "enforces that, along with the required fields and their shapes,",
     "on every lookup."
   ],

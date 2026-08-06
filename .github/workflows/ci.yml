@@ -29,7 +29,7 @@ jobs:
       - name: Installing Dependencies
         run: |
           apt-get update > /dev/null 2>&1
-          apt-get install -y ca-certificates curl git jq equivs \
+          apt-get install -y ca-certificates python3 git jq equivs \
           debhelper-compat devscripts > /dev/null 2>&1
 
       - name: Checkout
@@ -44,12 +44,12 @@ jobs:
           # against the default_train pairing without publishing.  A
           # tag may carry the same name as a paired branch, so only
           # branch refs are ever allowed to publish.
-          resolve=.github/workflows/scripts/resolve-train.sh
+          resolve=.github/workflows/scripts/resolve-train.py
           entry=""
           publish=false
           if [ "$GITHUB_REF_TYPE" = branch ]; then
             # Status 3 means this branch is simply not paired; any
-            # other failure is a broken config resolve-train.sh has
+            # other failure is a broken config resolve-train.py has
             # already explained.
             rc=0
             entry=$("$resolve" branch "$GITHUB_REF_NAME") || rc=$?
@@ -81,7 +81,7 @@ jobs:
           # Only the headers are needed to build the modules; the test
           # VM installs the image too, through the same helper so both
           # paths verify downloads identically.
-          .github/workflows/scripts/fetch-tn-kernel.sh \
+          .github/workflows/scripts/fetch-tn-kernel.py \
             "$KERNEL_REPO" "$KERNEL_TAG" /tmp/tn-kernel 'linux-headers-*'
           cd /tmp/tn-kernel
           release=$(jq -r '.release' manifest.json)
