@@ -1,0 +1,39 @@
+{
+  "docs": [
+    "Single source of truth for which ZFS branches are built and",
+    "published against which TrueNAS kernels, read by ci.yml (native",
+    "deb build + rolling release), kernel-watch.yml (rebuild when the",
+    "kernel moves) and zfs-qemu-tn.yml (functional tests under the",
+    "TrueNAS kernel).  Each trains[] entry pairs a ZFS branch with the",
+    "rolling kernel release it is built against (kernel_repo +",
+    "kernel_tag); the resulting debs are republished as this repo's",
+    "<train>-nightly release.  Branches not listed here build and test",
+    "against the default_train pairing and publish nothing.",
+    "",
+    "Each branch builds and publishes from its own copy of this file,",
+    "and kernel-watch reads every pairing back from that copy; it uses",
+    "the copy on the default branch only for the list of branches to",
+    "watch.  A branch that does not carry this file yet is reported as",
+    "not onboarded rather than built.",
+    "",
+    "Every branch and every train may appear at most once, or two",
+    "builds would fight over one release; scripts/resolve-train.sh",
+    "enforces that, along with the required fields and their shapes,",
+    "on every lookup."
+  ],
+  "default_train": "master",
+  "trains": [
+    {
+      "train": "master",
+      "branch": "truenas/zfs-2.4-release",
+      "kernel_repo": "truenas/linux",
+      "kernel_tag": "master-nightly"
+    },
+    {
+      "train": "26",
+      "branch": "stable/26",
+      "kernel_repo": "truenas/linux",
+      "kernel_tag": "26-nightly"
+    }
+  ]
+}

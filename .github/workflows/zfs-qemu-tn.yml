@@ -15,7 +15,7 @@ on:
         type: string
         required: false
         default: ""
-        description: "(optional) TrueNAS kernel train to test ('master' or '26'; default: mapped from the branch)"
+        description: "(optional) train from .github/trains.json whose kernel to test (default: mapped from the branch)"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       ci_type: ${{ steps.os.outputs.ci_type }}
-      kernel_train: ${{ steps.kernel.outputs.kernel_train }}
+      train: ${{ steps.kernel.outputs.train }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -48,30 +48,46 @@ jobs:
           echo "ci_type=$ci_type" | tee -a $GITHUB_OUTPUT
       - name: Determine TrueNAS kernel train
         id: kernel
-        run: |
-          # The VM boots the TrueNAS production kernel published by the
-          # truenas/linux rolling releases (<train>-nightly).  Branches
-          # that feed a TrueNAS train use that train's kernel (PRs
-          # follow their base branch); everything else defaults to the
-          # master train.
-          if ${{ github.event_name == 'pull_request' }}; then
-            ref="${{ github.base_ref }}"
-          else
-            ref="${{ github.ref_name }}"
-          fi
-
-          case "$ref" in
-            truenas/zfs-2.4-release) train="master" ;;
-            stable/26)               train="26" ;;
-            *)                       train="master" ;;
-          esac
-
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
           # Manual override from workflow_dispatch
-          if [ -n "${{ github.event.inputs.kernel_train }}" ]; then
-            train="${{ github.event.inputs.kernel_train }}"
+          TRAIN_OVERRIDE: ${{ github.event.inputs.kernel_train }}
+        run: |
+          # The VM boots the TrueNAS production kernel of the pairing
+          # declared in .github/trains.json.  Branches paired with a
+          # train use that train's kernel (PRs follow their base
+          # branch); everything else defaults to the default_train
+          # pairing.
+          resolve=.github/workflows/scripts/resolve-train.sh
+          rc=0
+          if [ -n "$TRAIN_OVERRIDE" ]; then
+            entry=$("$resolve" train "$TRAIN_OVERRIDE") || rc=$?
+            if [ "$rc" -eq 3 ]; then
+              echo "ERROR: kernel_train '$TRAIN_OVERRIDE' is not a train" \
+                "in .github/trains.json"
+              exit 1
+            fi
+          else
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              ref="$BASE_REF"
+            else
+              ref="$REF_NAME"
+            fi
+            entry=$("$resolve" branch "$ref") || rc=$?
+            # Status 3 just means the branch is not paired with a
+            # train of its own; anything else is a broken config
+            # resolve-train.sh has already explained.
+            if [ "$rc" -eq 3 ]; then
+              rc=0
+              entry=$("$resolve" default)
+            fi
           fi
+          [ "$rc" -eq 0 ] || exit "$rc"
 
-          echo "kernel_train=$train" | tee -a $GITHUB_OUTPUT
+          echo "Kernel pairing: $entry"
+          echo "train=$(jq -r '.train' <<< "$entry")" | tee -a "$GITHUB_OUTPUT"
 
   qemu-vm-tn:
     name: qemu-x86 (debian13-tn)
@@ -100,7 +116,9 @@ jobs:
 
     - name: Install TrueNAS kernel
       timeout-minutes: 20
-      run: .github/workflows/scripts/qemu-tn-kernel.sh ${{ needs.test-config.outputs.kernel_train }}
+      env:
+        TRAIN: ${{ needs.test-config.outputs.train }}
+      run: .github/workflows/scripts/qemu-tn-kernel.sh "$TRAIN"
 
     - name: Build modules
       timeout-minutes: 30

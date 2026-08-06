@@ -1,0 +1,205 @@
+name: Kernel watch
+
+# ci.yml builds the native debs against the rolling TrueNAS production
+# kernel paired with each branch in .github/trains.json, but it only
+# runs on pushes: when the kernel moves under an unchanged branch, the
+# published debs keep carrying modules for the previous kernel.  Poll
+# the kernel releases and redispatch ci.yml on the affected branch
+# whenever the published debs no longer match the kernel they should be
+# built against.
+#
+# GitHub only runs scheduled workflows from the default branch, so this
+# file is effective there alone.  The default branch's trains.json says
+# which branches to watch, but each pairing is read back from the
+# branch itself, because that copy is the one ci.yml builds and
+# publishes from: comparing published debs against any other copy can
+# never converge while the two differ.  A branch that does not carry
+# trains.json yet is not onboarded - warn and leave it alone rather
+# than dispatch a build it cannot run.
+
+on:
+  schedule:
+    # The kernel nightlies are daily builds; checking every six hours
+    # bounds how long the debs can lag behind them.
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: kernel-watch
+  cancel-in-progress: false
+
+jobs:
+
+  load-config:
+
+    runs-on: ubuntu-22.04
+
+    outputs:
+      trains: ${{ steps.config.outputs.trains }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List the watched trains
+        id: config
+        run: |
+          # resolve-train.sh validates the whole file - required
+          # fields, value shapes, unique train and branch names, a
+          # resolvable default_train - so a bad edit is caught here
+          # instead of six hours later inside a download URL.
+          .github/workflows/scripts/resolve-train.sh default > /dev/null
+          echo "trains=$(jq -c '[.trains[] | {train, branch}]' \
+            .github/trains.json)" | tee -a "$GITHUB_OUTPUT"
+
+  check-kernel:
+
+    needs: load-config
+
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.load-config.outputs.trains) }}
+
+    name: ${{ matrix.train }}-nightly
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild if the debs no longer match the kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TRAIN: ${{ matrix.train }}
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          # fetch <url> <file> [accept]: 0 = fetched, 1 = no such
+          # release asset or file, 2 = transient/unexpected failure.
+          # The token keeps this working on a private fork, where an
+          # anonymous 404 would look like "nothing published yet" and
+          # rebuild forever.
+          fetch() {
+            local code
+            code=$(curl -LSs -o "$2" -w '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: ${3:-application/octet-stream}" "$1") || return 2
+            case "$code" in
+              200) return 0 ;;
+              404) return 1 ;;
+              *)   echo "ERROR: GET $1 returned HTTP $code"; return 2 ;;
+            esac
+          }
+
+          # Resolve the pairing from the branch being watched, not from
+          # the copy next to this workflow.
+          turl="$GITHUB_API_URL/repos/$GH_REPO/contents/.github/trains.json?ref=$BRANCH"
+          rc=0
+          fetch "$turl" branch-trains.json 'application/vnd.github.raw+json' \
+            || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "::warning::$BRANCH does not carry .github/trains.json," \
+              "so it cannot build or publish $TRAIN-nightly yet." \
+              "Land trains.json and ci.yml there to start watching it."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            exit 1
+          fi
+
+          rc=0
+          entry=$(TRAINS_JSON=branch-trains.json \
+            .github/workflows/scripts/resolve-train.sh train "$TRAIN") || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "::warning::$BRANCH has no trains[] entry for $TRAIN," \
+              "so nothing there publishes $TRAIN-nightly."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "ERROR: .github/trains.json on $BRANCH is unusable"
+            exit 1
+          fi
+          KERNEL_REPO=$(jq -r '.kernel_repo' <<< "$entry")
+          KERNEL_TAG=$(jq -r '.kernel_tag' <<< "$entry")
+
+          kurl="https://github.com/$KERNEL_REPO/releases/download/$KERNEL_TAG/manifest.json"
+          rc=0; fetch "$kurl" kernel.json || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "$KERNEL_REPO has published no $KERNEL_TAG release; nothing to track."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            exit 1
+          fi
+          want="$KERNEL_REPO@$KERNEL_TAG: $(jq -r \
+            '"\(.release) (\(.commit))"' kernel.json)"
+          echo "Kernel:         $want"
+
+          zurl="https://github.com/$GH_REPO/releases/download/${TRAIN}-nightly/manifest.json"
+          rc=0; fetch "$zurl" debs.json || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "No ${TRAIN}-nightly debs published yet; rebuilding."
+          elif [ "$rc" -ne 0 ]; then
+            exit 1
+          else
+            # Debs published before manifest.json carried the kernel
+            # pairing fields compare as "?" and get rebuilt once.
+            have=$(jq -r '"\(.kernel_repo // "?")@\(.kernel_tag // "?"): " +
+              "\(.kernel_release) (\(.kernel_commit // "?"))"' debs.json)
+            echo "Debs built for: $have"
+            if [ "$have" = "$want" ]; then
+              echo "The ${TRAIN}-nightly debs match the kernel; nothing to do."
+              exit 0
+            fi
+          fi
+
+          # A queued or running ci.yml build on the branch is about to
+          # publish; dispatching a second run of the same commit would
+          # race it over the release.  If that run predates the kernel
+          # update, the next scheduled check catches up.
+          for status in queued in_progress; do
+            n=$(gh api -X GET "repos/$GH_REPO/actions/workflows/ci.yml/runs" \
+                -f branch="$BRANCH" -f status="$status" -f per_page=1 \
+                --jq .total_count)
+            # A non-numeric count would make [ -gt ] fail the test
+            # rather than the step, silently turning this guard into
+            # its opposite.
+            case "$n" in
+              '' | *[!0-9]*)
+                echo "ERROR: runs API returned total_count '$n'"
+                exit 1
+                ;;
+            esac
+            if [ "$n" -gt 0 ]; then
+              echo "ci.yml is already $status on $BRANCH; not dispatching."
+              exit 0
+            fi
+          done
+
+          # If the build we last dispatched for this very commit failed,
+          # dispatching it again just repeats that failure every six
+          # hours.  Stay red here instead: the debs really are stale,
+          # and the one real failure keeps its signal.
+          head=$(gh api "repos/$GH_REPO/commits/$BRANCH" --jq .sha)
+          last=$(gh api -X GET "repos/$GH_REPO/actions/workflows/ci.yml/runs" \
+              -f branch="$BRANCH" -f event=workflow_dispatch \
+              -f status=completed -f per_page=1 \
+              --jq '.workflow_runs[0]
+                    | "\(.conclusion) \(.head_sha) \(.html_url)"')
+          read -r conclusion sha url <<< "$last"
+          if [ "$conclusion" = failure ] && [ "$sha" = "$head" ]; then
+            echo "ERROR: the last kernel-watch build of $BRANCH at ${head::12}"
+            echo "failed, and the ${TRAIN}-nightly debs are still stale:"
+            echo "  $url"
+            echo "Fix that build or push to $BRANCH; rebuilding the same"
+            echo "commit would only repeat the same failure."
+            exit 1
+          fi
+
+          echo "Dispatching ci.yml on $BRANCH"
+          if ! gh workflow run ci.yml --ref "$BRANCH"; then
+            echo "ERROR: dispatch failed; ci.yml on $BRANCH may be missing"
+            echo "the workflow_dispatch trigger."
+            exit 1
+          fi
