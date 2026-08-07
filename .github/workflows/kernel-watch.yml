@@ -121,6 +121,24 @@ jobs:
             echo "ERROR: .github/trains.json on $BRANCH is unusable"
             exit 1
           fi
+
+          # ci.yml resolves its pairing by branch, and a build it
+          # dispatches on $BRANCH publishes $TRAIN-nightly only if
+          # $BRANCH's own trains.json files $TRAIN under $BRANCH.  If it
+          # files $TRAIN under another branch, ci.yml on $BRANCH builds
+          # $BRANCH's own pairing (or the default train) and never
+          # $TRAIN-nightly, so these debs stay stale and the next check
+          # redispatches the same no-op - every six hours forever.
+          # Report the disagreement instead of looping on it.
+          paired_branch=$(jq -r '.branch' <<< "$entry")
+          if [ "$paired_branch" != "$BRANCH" ]; then
+            echo "::warning::$BRANCH's trains.json pairs $TRAIN with" \
+              "$paired_branch, not $BRANCH, so ci.yml on $BRANCH would" \
+              "not publish $TRAIN-nightly.  Pair $TRAIN with $BRANCH" \
+              "there, or drop $BRANCH from the default branch's watch" \
+              "list."
+            exit 0
+          fi
           KERNEL_REPO=$(jq -r '.kernel_repo' <<< "$entry")
           KERNEL_TAG=$(jq -r '.kernel_tag' <<< "$entry")
 
