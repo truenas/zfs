@@ -1,6 +1,11 @@
 name: CI
 
-on: [push]
+on:
+  push:
+  # Dispatched by kernel-watch.yml on the deb-publishing branches when
+  # the rolling TrueNAS kernel moves, so the published debs track
+  # kernel updates as well as ZFS merges.
+  workflow_dispatch:
 
 jobs:
 
@@ -16,55 +21,72 @@ jobs:
       run:
         shell: bash
 
-    steps:
-      - name: Map branch to TrueNAS train
-        run: |
-          # All builds run against a rolling TrueNAS production kernel
-          # published by truenas/linux
-          # (https://github.com/truenas/linux/releases).  Branches that
-          # feed a TrueNAS train build against that train's kernel;
-          # everything else defaults to the master train.
-          case "$GITHUB_REF_NAME" in
-            truenas/zfs-2.4-release) train="master" ;;
-            stable/26)               train="26" ;;
-            *)                       train="master" ;;
-          esac
-          echo "TRAIN=$train" >> "$GITHUB_ENV"
+    outputs:
+      train: ${{ steps.train.outputs.train }}
+      publish: ${{ steps.train.outputs.publish }}
 
+    steps:
       - name: Installing Dependencies
         run: |
           apt-get update > /dev/null 2>&1
-          apt-get install -y ca-certificates curl git jq equivs \
+          apt-get install -y ca-certificates python3 git jq equivs \
           debhelper-compat devscripts > /dev/null 2>&1
 
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Map branch to TrueNAS train
+        id: train
+        run: |
+          # .github/trains.json declares which ZFS branches are built
+          # and published against which rolling TrueNAS kernels.
+          # Branches paired there publish debs; everything else builds
+          # against the default_train pairing without publishing.  A
+          # tag may carry the same name as a paired branch, so only
+          # branch refs are ever allowed to publish.
+          resolve=.github/workflows/scripts/resolve-train.py
+          entry=""
+          publish=false
+          if [ "$GITHUB_REF_TYPE" = branch ]; then
+            # Status 3 means this branch is simply not paired; any
+            # other failure is a broken config resolve-train.py has
+            # already explained.
+            rc=0
+            entry=$("$resolve" branch "$GITHUB_REF_NAME") || rc=$?
+            case $rc in
+              0) publish=true ;;
+              3) entry="" ;;
+              *) exit "$rc" ;;
+            esac
+          fi
+          if [ -z "$entry" ]; then
+            entry=$("$resolve" default)
+          fi
+          echo "Kernel pairing: $entry"
+          train=$(jq -r '.train' <<< "$entry")
+          kernel_repo=$(jq -r '.kernel_repo' <<< "$entry")
+          kernel_tag=$(jq -r '.kernel_tag' <<< "$entry")
+          {
+            echo "TRAIN=$train"
+            echo "KERNEL_REPO=$kernel_repo"
+            echo "KERNEL_TAG=$kernel_tag"
+          } >> "$GITHUB_ENV"
+          {
+            echo "train=$train"
+            echo "publish=$publish"
+          } | tee -a "$GITHUB_OUTPUT"
+
       - name: Install TrueNAS kernel headers
         run: |
-          # Consume the rolling kernel release the same way downstream
-          # consumers are meant to: fetch manifest.json to learn the
-          # current kernel release and file names, then verify the debs
-          # against SHA256SUMS.
-          url="https://github.com/truenas/linux/releases/download/${TRAIN}-nightly"
-          mkdir -p /tmp/tn-kernel
+          # Only the headers are needed to build the modules; the test
+          # VM installs the image too, through the same helper so both
+          # paths verify downloads identically.
+          .github/workflows/scripts/fetch-tn-kernel.py \
+            "$KERNEL_REPO" "$KERNEL_TAG" /tmp/tn-kernel 'linux-headers-*'
           cd /tmp/tn-kernel
-          if ! curl --fail -LSs -O "$url/manifest.json" ; then
-            echo "ERROR: no ${TRAIN}-nightly kernel release published at $url yet"
-            exit 1
-          fi
-          curl --fail -LSs -O "$url/SHA256SUMS"
           release=$(jq -r '.release' manifest.json)
-          echo "TrueNAS $TRAIN kernel: $release"
-          for deb in $(jq -r '.debs[]' manifest.json); do
-            case "$deb" in
-              linux-headers-*)
-                echo "Downloading $deb"
-                curl --fail -LSs -O "$url/$deb"
-                ;;
-            esac
-          done
-          sha256sum -c --ignore-missing SHA256SUMS
+          commit=$(jq -r '.commit' manifest.json)
+          echo "TrueNAS $TRAIN kernel: $release ($KERNEL_REPO@$commit)"
           apt-get install -y ./linux-headers-*.deb
           # The TrueNAS kernel packages carry version-free names, so
           # locate the header tree through the build symlink the headers
@@ -72,6 +94,7 @@ jobs:
           ksrc=$(readlink -f "/lib/modules/$release/build")
           test -f "$ksrc/Module.symvers"
           echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+          echo "KERNEL_COMMIT=$commit" >> "$GITHUB_ENV"
           echo "KSRC=$ksrc" >> "$GITHUB_ENV"
 
       - name: Build deb package
@@ -105,8 +128,13 @@ jobs:
           jq -n \
             --arg train "$TRAIN" \
             --arg zfs_version "$(dpkg-parsechangelog -S Version)" \
+            --arg kernel_repo "$KERNEL_REPO" \
+            --arg kernel_tag "$KERNEL_TAG" \
             --arg kernel_release "$KERNEL_RELEASE" \
-            '{train: $train, zfs_version: $zfs_version, kernel_release: $kernel_release}' \
+            --arg kernel_commit "$KERNEL_COMMIT" \
+            '{train: $train, zfs_version: $zfs_version,
+              kernel_repo: $kernel_repo, kernel_tag: $kernel_tag,
+              kernel_release: $kernel_release, kernel_commit: $kernel_commit}' \
             > artifacts/buildinfo.json
         if: success()
 
@@ -116,10 +144,12 @@ jobs:
           path: artifacts
         if: success()
 
-  # On every merge to truenas/zfs-2.4-release or stable/26, republish the
-  # native debs built above (against the TrueNAS production kernel) as
-  # assets of a per-train rolling prerelease (master-nightly and
-  # 26-nightly respectively), mirroring the truenas/linux kernel
+  # On every merge to a branch paired with a train in
+  # .github/trains.json - and on the workflow_dispatch runs
+  # kernel-watch.yml fires when the TrueNAS kernel moves under an
+  # unchanged branch - republish the native debs built above (against
+  # the train's TrueNAS production kernel) as assets of a per-train
+  # rolling prerelease (<train>-nightly), mirroring the kernel
   # releases.  Release assets (unlike Actions artifacts) never expire and
   # are downloadable anonymously at stable URLs:
   #   https://github.com/truenas/zfs/releases/download/master-nightly/<file>
@@ -128,7 +158,10 @@ jobs:
   publish_latest_debs:
 
     needs: build-native-deb
-    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/truenas/zfs-2.4-release' || github.ref == 'refs/heads/stable/26') }}
+    # The build job set this from .github/trains.json, and only for
+    # branch refs; keeping the whole decision there means the trigger
+    # list and the ref namespace are checked in exactly one place.
+    if: ${{ needs.build-native-deb.outputs.publish == 'true' }}
 
     runs-on: ubuntu-22.04
 
@@ -163,8 +196,18 @@ jobs:
                 ;;
             esac
           done
-          echo "KERNEL_RELEASE=$(jq -r '.kernel_release' zfs-native/buildinfo.json)" >> "$GITHUB_ENV"
-          echo "ZFS_VERSION=$(jq -r '.zfs_version' zfs-native/buildinfo.json)" >> "$GITHUB_ENV"
+          # TRAIN becomes the release tag and the rest are published in
+          # manifest.json, so a missing field must stop the run.  A jq
+          # failure inside a command substitution does not trip set -e,
+          # hence the explicit check: jq -e fails on a null result.
+          for var in train kernel_repo kernel_tag kernel_release \
+              kernel_commit zfs_version; do
+            value=$(jq -er ".$var" zfs-native/buildinfo.json) || {
+              echo "ERROR: zfs-native/buildinfo.json has no .$var" >&2
+              exit 1
+            }
+            echo "${var^^}=$value"
+          done >> "$GITHUB_ENV"
 
       - name: Generate checksums and manifest
         run: |
@@ -176,14 +219,20 @@ jobs:
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --arg zfs_version "$ZFS_VERSION" \
+            --arg kernel_repo "$KERNEL_REPO" \
+            --arg kernel_tag "$KERNEL_TAG" \
             --arg kernel_release "$KERNEL_RELEASE" \
+            --arg kernel_commit "$KERNEL_COMMIT" \
             '{
               branch: $branch,
               commit: $commit,
               date: $date,
               run_url: $run_url,
               zfs_version: $zfs_version,
+              kernel_repo: $kernel_repo,
+              kernel_tag: $kernel_tag,
               kernel_release: $kernel_release,
+              kernel_commit: $kernel_commit,
               debs: .
             }' > manifest.json
           cat manifest.json
@@ -202,30 +251,25 @@ jobs:
             exit 0
           fi
 
-          # Map the branch to its TrueNAS train.  Exact matches only: if a
-          # branch is added to this job's if-gate it must be mapped here
-          # too, otherwise two branches could fight over one release.
-          case "$GITHUB_REF_NAME" in
-            truenas/zfs-2.4-release) train="master" ;;
-            stable/26)               train="26" ;;
-            *)
-              echo "ERROR: no train mapping for branch $GITHUB_REF_NAME"
-              exit 1
-              ;;
-          esac
-          tag="${train}-nightly"
+          # The build job resolved this branch's train and kernel
+          # pairing from .github/trains.json and recorded them in
+          # buildinfo.json, and gated this job on the same lookup, so
+          # only paired branches get here.
+          tag="${TRAIN}-nightly"
 
           {
             echo "Rolling native deb build of \`$GITHUB_REF_NAME\` at $GITHUB_SHA."
             echo
             echo "- ZFS version: \`$ZFS_VERSION\`"
             echo "- Built against kernel: \`$KERNEL_RELEASE\`"
-            echo "  from https://github.com/truenas/linux/releases/tag/$tag"
+            echo "  ($KERNEL_REPO@${KERNEL_COMMIT::12}) from"
+            echo "  https://github.com/$KERNEL_REPO/releases/tag/$KERNEL_TAG"
             echo "- Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
             echo "The tag and all assets are replaced on every merge to"
-            echo "\`$GITHUB_REF_NAME\`. Fetch \`manifest.json\` to see what is"
-            echo "currently published and verify downloads against \`SHA256SUMS\`."
+            echo "\`$GITHUB_REF_NAME\` and whenever the TrueNAS kernel moves."
+            echo "Fetch \`manifest.json\` to see what is currently published"
+            echo "and verify downloads against \`SHA256SUMS\`."
           } > release-notes.md
 
           gh release delete "$tag" --cleanup-tag --yes || true
@@ -233,7 +277,7 @@ jobs:
           gh release create "$tag" \
             --prerelease \
             --target "$GITHUB_SHA" \
-            --title "TrueNAS $train OpenZFS debs (nightly)" \
+            --title "TrueNAS $TRAIN OpenZFS debs (nightly)" \
             --notes-file release-notes.md \
             release-assets/*.deb \
             release-assets/SHA256SUMS \

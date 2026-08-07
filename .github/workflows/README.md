@@ -97,31 +97,79 @@ Available via `specific_os` or `ZTS_OS_OVERRIDE`:
 
 ### TrueNAS fork specifics
 
-The upstream workflows are kept as close to openzfs/zfs as possible;
-TrueNAS additions live in separate fork-only files.  `zfs-qemu.yml`
-itself is unmodified: its matrix is restricted to `["debian13"]` with
-the `ZTS_OS_OVERRIDE` repository variable and keeps testing the stock
-Debian kernel.
+Upstream workflows are kept as close to openzfs/zfs as possible;
+TrueNAS additions live in fork-only files.  `zfs-qemu.yml` is
+unmodified and keeps testing the stock Debian kernel (matrix pinned
+to `["debian13"]` via the `ZTS_OS_OVERRIDE` repository variable).
 
-`zfs-qemu-tn.yml` (fork-only) runs the same build and test sequence on
-the same Debian 13 image rebooted into the TrueNAS production kernel
-(OS name `debian13-tn`, installed by `scripts/qemu-tn-kernel.sh`).  A
-failure only in zfs-qemu-tn points at the TrueNAS kernel; a failure in
-both workflows points at the ZFS change (or Debian) itself.  The
-kernel image and development headers are consumed from the rolling
-releases published by
-[truenas/linux](https://github.com/truenas/linux/releases):
+[`.github/trains.json`](../trains.json) is the single source of
+truth: each `trains[]` entry pairs one ZFS branch with the rolling
+TrueNAS kernel release (`kernel_repo` + `kernel_tag`) it is built,
+tested and published against.  Unlisted branches use the
+`default_train` pairing and publish nothing.  Every lookup goes
+through `scripts/resolve-train.py`, which validates the whole file -
+required fields, value shapes, unique train and branch names, a
+resolvable `default_train` - so a bad edit fails where it is made.
+Consumers:
 
-| branch                    | train  | kernel release tag |
-|---------------------------|--------|--------------------|
-| `truenas/zfs-2.4-release` | master | `master-nightly`   |
-| `stable/26`               | 26     | `26-nightly`       |
-| any other branch          | master | `master-nightly`   |
+- `ci.yml`: builds native debs against the paired kernel headers in a
+  `debian:trixie` container.  A push to a paired branch republishes
+  them as this repo's rolling `<train>-nightly` release, with
+  `SHA256SUMS` and a `manifest.json` recording the exact kernel used.
+  Only branch refs publish, so a tag sharing a branch's name cannot
+  race it over the release.
+- `kernel-watch.yml` (scheduled, default branch only): every six
+  hours, compares each train's published debs with its kernel release
+  and dispatches `ci.yml` on the paired branch when they diverge -
+  kernel moved, pairing changed, or nothing published yet.
+- `zfs-qemu-tn.yml`: runs the zfs-qemu sequence on the same Debian 13
+  image rebooted into the paired TrueNAS kernel (`debian13-tn`, via
+  `scripts/qemu-tn-kernel.sh`).  Fails only here: suspect the TrueNAS
+  kernel; fails in zfs-qemu too: suspect the ZFS change.  PRs follow
+  their base branch; the `kernel_train` dispatch input can force any
+  configured train.  Runs on every pull request, but on push only for
+  the paired branches, so a PR branch is not tested twice over.
 
-- PRs follow their base branch; the `kernel_train` dispatch input of
-  zfs-qemu-tn.yml can force a train.
-- `ci.yml` builds the native debs in a `debian:trixie` container
-  against the TrueNAS kernel headers and, on every push to
-  `truenas/zfs-2.4-release` or `stable/26`, republishes them as a
-  rolling `<train>-nightly` GitHub release with `SHA256SUMS` and a
-  `manifest.json`, mirroring the truenas/linux kernel releases.
+A branch always builds, tests and publishes from **its own** copy of
+trains.json, and kernel-watch reads each pairing back from that same
+copy - it only takes the list of branches to watch from the default
+branch.  So the copies never have to be byte-identical; a branch that
+does not carry trains.json yet is reported as not onboarded and left
+alone, rather than dispatched a build it cannot run.
+
+#### Adding a watched release (train)
+
+1. The kernel must already be published: `<kernel_repo>` needs a
+   rolling `<kernel_tag>` release carrying `manifest.json`,
+   `SHA256SUMS` and `linux-{image,headers}-*` debs, like
+   [truenas/linux](https://github.com/truenas/linux/releases).
+2. Land the pairing on the branch first, together with this `ci.yml`
+   (its `workflow_dispatch` trigger is what kernel-watch dispatches)
+   and this `zfs-qemu-tn.yml`:
+
+   ```json
+   { "train": "27", "branch": "stable/27",
+     "kernel_repo": "truenas/linux", "kernel_tag": "27-nightly" }
+   ```
+
+3. Add the same entry to the default branch's trains.json, which is
+   what puts the train under kernel-watch.  Until then the branch
+   simply builds and tests against its own pairing without being
+   watched; do it the other way round and kernel-watch warns that the
+   branch is not onboarded.
+4. Nothing else: within six hours kernel-watch sees no
+   `<train>-nightly` debs and dispatches the first build.  Trigger
+   the "Kernel watch" workflow manually to skip the wait.
+
+#### Retiring a train
+
+Order matters, because the paired branch publishes from its own copy:
+
+1. Delete the entry from the **paired branch's** trains.json, so its
+   ci.yml stops republishing `<train>-nightly` on every push.
+2. Delete it from the default branch's trains.json, so kernel-watch
+   stops checking it.
+3. Remove the leftover `<train>-nightly` release and tag by hand.
+
+Doing step 3 before step 1 only resurrects the release on the next
+push to the branch, and nothing watches it any more.
