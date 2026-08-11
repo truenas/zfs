@@ -1694,9 +1694,21 @@ zfsacl_to_nfsacl41i(const vsecattr_t vsecp, u32 *xattrbuf)
 static int
 nfsace4i_to_acep(const u32 *xattrbuf, ace_t *acep)
 {
-	u32 iflag, id;
+	u32 type, iflag, id;
 
-	acep->a_type = ntohl(*(xattrbuf++));
+	/*
+	 * Only ALLOW and DENY ACE types are implemented.  AUDIT and
+	 * ALARM are defined by NFSv4.1 but unimplemented in ZFS, and
+	 * must not pass this barrier either.
+	 */
+	type = ntohl(*(xattrbuf++));
+	if (type != ACE_ACCESS_ALLOWED_ACE_TYPE &&
+	    type != ACE_ACCESS_DENIED_ACE_TYPE) {
+		dprintf("Unsupported ACE type 0x%08x\n", type);
+		return (-EINVAL);
+	}
+
+	acep->a_type = type;
 	acep->a_flags = ntohl(*(xattrbuf++)) & NFS41_FLAGS;
 	iflag = ntohl(*(xattrbuf++));
 	acep->a_access_mask = ntohl(*(xattrbuf++));
