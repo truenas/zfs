@@ -100,15 +100,17 @@ zfs_uiomove_bvec_impl(void *p, size_t n, zfs_uio_rw_t rw, zfs_uio_t *uio)
 
 	while (n && uio->uio_resid) {
 		void *paddr;
-		cnt = MIN(bv->bv_len - skip, n);
+		size_t offset = bv->bv_offset + skip;
+		cnt = MIN(PAGE_SIZE - (offset & ~PAGE_MASK),
+		    MIN(bv->bv_len - skip, n));
 
-		paddr = zfs_kmap_local(bv->bv_page);
+		paddr = zfs_kmap_local(bv->bv_page + (offset >> PAGE_SHIFT));
 		if (rw == UIO_READ) {
 			/* Copy from buffer 'p' to the bvec data */
-			memcpy(paddr + bv->bv_offset + skip, p, cnt);
+			memcpy(paddr + (offset & ~PAGE_MASK), p, cnt);
 		} else {
 			/* Copy from bvec data to buffer 'p' */
-			memcpy(p, paddr + bv->bv_offset + skip, cnt);
+			memcpy(p, paddr + (offset & ~PAGE_MASK), cnt);
 		}
 		zfs_kunmap_local(paddr);
 
@@ -232,6 +234,8 @@ zfs_uiomove_iter(void *p, size_t n, zfs_uio_rw_t rw, zfs_uio_t *uio,
     boolean_t revert)
 {
 	size_t cnt = MIN(n, uio->uio_resid);
+	size_t oldcnt = cnt;
+	int error = 0;
 
 	if (rw == UIO_READ)
 		cnt = copy_to_iter(p, cnt, uio->uio_iter);
@@ -247,16 +251,21 @@ zfs_uiomove_iter(void *p, size_t n, zfs_uio_rw_t rw, zfs_uio_t *uio,
 		return (EFAULT);
 
 	/*
-	 * Revert advancing the uio_iter.  This is set by zfs_uiocopy()
-	 * to avoid consuming the uio and its iov_iter structure.
+	 * When revert is set this is a zfs_uiocopy() which should not
+	 * consume the uio and its iov_iter structure.  Otherwise, it's
+	 * a zfs_uiomove() which is expected to update the uio.  Partial
+	 * copies are allowed for both copy and move but EFAULT should
+	 * be returned for zfs_uiomove().
 	 */
 	if (revert)
 		iov_iter_revert(uio->uio_iter, cnt);
+	else if (cnt != oldcnt)
+		error = EFAULT;
 
 	uio->uio_resid -= cnt;
 	uio->uio_loffset += cnt;
 
-	return (0);
+	return (error);
 }
 
 int

@@ -1280,6 +1280,7 @@ dsl_errorscrub_pause_resume_sync(void *arg, dmu_tx_t *tx)
 		spa->spa_scan_pass_errorscrub_pause = gethrestime_sec();
 		scn->errorscrub_phys.dep_paused_flags = B_TRUE;
 		dsl_errorscrub_sync_state(scn, tx);
+		zap_cursor_fini(&scn->errorscrub_cursor);
 		spa_event_notify(spa, NULL, NULL, ESC_ZFS_ERRORSCRUB_PAUSED);
 	} else {
 		ASSERT3U(*cmd, ==, POOL_SCRUB_NORMAL);
@@ -1444,7 +1445,7 @@ dsl_scan_restart_resilver(dsl_pool_t *dp, uint64_t txg)
 	if (txg == 0) {
 		dmu_tx_t *tx;
 		tx = dmu_tx_create_dd(dp->dp_mos_dir);
-		VERIFY(0 == dmu_tx_assign(tx, DMU_TX_WAIT));
+		VERIFY0(dmu_tx_assign(tx, DMU_TX_WAIT | DMU_TX_SUSPEND));
 
 		txg = dmu_tx_get_txg(tx);
 		dp->dp_scan->scn_restart_txg = txg;

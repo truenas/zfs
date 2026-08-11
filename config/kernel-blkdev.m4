@@ -1,3 +1,4 @@
+dnl # SPDX-License-Identifier: CDDL-1.0
 dnl #
 dnl # 2.6.38 API change,
 dnl # Added blkdev_get_by_path()
@@ -29,9 +30,8 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_BLKDEV_GET_BY_PATH_4ARG], [
 		const char *path = "path";
 		fmode_t mode = 0;
 		void *holder = NULL;
-		struct blk_holder_ops h;
 
-		bdev = blkdev_get_by_path(path, mode, holder, &h);
+		bdev = blkdev_get_by_path(path, mode, holder, NULL);
 	])
 ])
 
@@ -48,9 +48,8 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_BLKDEV_BDEV_OPEN_BY_PATH], [
 		const char *path = "path";
 		fmode_t mode = 0;
 		void *holder = NULL;
-		struct blk_holder_ops h;
 
-		bdh = bdev_open_by_path(path, mode, holder, &h);
+		bdh = bdev_open_by_path(path, mode, holder, NULL);
 	])
 ])
 
@@ -68,9 +67,8 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_BDEV_FILE_OPEN_BY_PATH], [
 		const char *path = "path";
 		fmode_t mode = 0;
 		void *holder = NULL;
-		struct blk_holder_ops h;
 
-		file = bdev_file_open_by_path(path, mode, holder, &h);
+		file = bdev_file_open_by_path(path, mode, holder, NULL);
 	])
 ])
 

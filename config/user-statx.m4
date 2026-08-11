@@ -1,8 +1,9 @@
+dnl # SPDX-License-Identifier: CDDL-1.0
 dnl #
 dnl # Check for statx() function and STATX_MNT_ID availability
 dnl #
 AC_DEFUN([ZFS_AC_CONFIG_USER_STATX], [
-	AC_CHECK_HEADERS([linux/stat.h],
+	AC_CHECK_HEADERS([sys/stat.h],
 		[have_stat_headers=yes],
 		[have_stat_headers=no])
 
@@ -14,7 +15,8 @@ AC_DEFUN([ZFS_AC_CONFIG_USER_STATX], [
 			AC_MSG_CHECKING([for STATX_MNT_ID])
 			AC_COMPILE_IFELSE([
 				AC_LANG_PROGRAM([[
-					#include <linux/stat.h>
+					#define _GNU_SOURCE
+					#include <sys/stat.h>
 				]], [[
 					struct statx stx;
 					int mask = STATX_MNT_ID;
@@ -29,6 +31,6 @@ AC_DEFUN([ZFS_AC_CONFIG_USER_STATX], [
 			])
 		])
 	], [
-		AC_MSG_WARN([linux/stat.h not found; skipping statx support])
+		AC_MSG_WARN([sys/stat.h not found; skipping statx support])
 	])
 ])  dnl end AC_DEFUN
