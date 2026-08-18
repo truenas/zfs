@@ -285,6 +285,7 @@ EXPORT_SYMBOL(zone_dataset_detach);
  * - It is a parent of a namespace entry.
  * - It is one of the namespace entries.
  * - It is a child of a namespace entry.
+ * - It is a reference to a namespace entry (snapshot or bookmark).
  *
  * A dataset is writable if:
  * - It is one of the namespace entries.
@@ -352,7 +353,8 @@ zone_dataset_visible(const char *dataset, int *write)
 			 * the namespace entry.
 			 */
 			visible = memcmp(zd->zd_dsname, dataset,
-			    zd_len) == 0 && dataset[zd_len] == '/';
+			    zd_len) == 0 && (dataset[zd_len] == '/' ||
+			    dataset[zd_len] == '@' || dataset[zd_len] == '#');
 			if (visible) {
 				if (write != NULL)
 					*write = 1;
