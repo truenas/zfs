@@ -82,7 +82,9 @@ tests = ['block_cloning_clone_mmap_cached',
     'block_cloning_copyfilerange_fallback_same_txg',
     'block_cloning_replay', 'block_cloning_replay_encrypted',
     'block_cloning_lwb_buffer_overflow', 'block_cloning_clone_mmap_write',
-    'block_cloning_rlimit_fsize', 'block_cloning_large_offset']
+    'block_cloning_rlimit_fsize', 'block_cloning_large_offset',
+    'block_cloning_after_device_removal',
+    'block_cloning_after_trunc']
 tags = ['functional', 'block_cloning']
 
 [tests/functional/bootfs]
@@ -249,6 +251,10 @@ tests = ['zfs_inherit_001_neg', 'zfs_inherit_002_neg', 'zfs_inherit_003_pos',
     'zfs_inherit_mountpoint']
 tags = ['functional', 'cli_root', 'zfs_inherit']
 
+[tests/functional/cli_root/zfs_list]
+tests = ['zfs_list_009_pos']
+tags = ['functional', 'cli_root', 'zfs_list']
+
 [tests/functional/cli_root/zfs_load-key]
 tests = ['zfs_load-key', 'zfs_load-key_all', 'zfs_load-key_file',
     'zfs_load-key_https', 'zfs_load-key_location', 'zfs_load-key_noop',
@@ -380,7 +386,7 @@ tags = ['functional', 'cli_root', 'zfs_wait']
 
 [tests/functional/cli_root/zhack]
 tests = ['zhack_label_repair_001', 'zhack_label_repair_002',
-    'zhack_label_repair_003', 'zhack_label_repair_004']
+    'zhack_label_repair_003', 'zhack_label_repair_004', 'zhack_metaslab_leak']
 pre =
 post =
 tags = ['functional', 'cli_root', 'zhack']
@@ -392,8 +398,9 @@ tags = ['functional', 'cli_root', 'zpool']
 [tests/functional/cli_root/zpool_add]
 tests = ['zpool_add_001_pos', 'zpool_add_002_pos', 'zpool_add_003_pos',
     'zpool_add_004_pos', 'zpool_add_006_pos', 'zpool_add_007_neg',
-    'zpool_add_008_neg', 'zpool_add_009_neg', 'zpool_add_010_pos',
-    'add-o_ashift', 'add_prop_ashift', 'zpool_add_dryrun_output']
+    'zpool_add_008_neg', 'zpool_add_009_neg', 'zpool_add_warn_create',
+    'zpool_add_warn_degraded', 'zpool_add_warn_removal', 'add-o_ashift',
+    'add_prop_ashift', 'zpool_add_dryrun_output']
 tags = ['functional', 'cli_root', 'zpool_add']
 
 [tests/functional/cli_root/zpool_attach]
@@ -693,7 +700,7 @@ tests = ['dedup_bclone', 'dedup_bclone_pruned', 'dedup_fdt_create',
     'dedup_fdt_import',
     'dedup_fdt_pacing', 'dedup_legacy_create', 'dedup_legacy_import',
     'dedup_legacy_fdt_upgrade', 'dedup_legacy_fdt_mixed', 'dedup_quota',
-    'dedup_prune', 'dedup_zap_shrink']
+    'dedup_prune', 'dedup_prune_leak', 'dedup_zap_shrink']
 pre =
 post =
 tags = ['functional', 'dedup']
@@ -858,7 +865,8 @@ tags = ['functional', 'quota']
 [tests/functional/redacted_send]
 tests = ['redacted_compressed', 'redacted_contents', 'redacted_deleted',
     'redacted_disabled_feature', 'redacted_embedded', 'redacted_holes',
-    'redacted_incrementals', 'redacted_largeblocks', 'redacted_many_clones',
+    'redacted_incrementals', 'redacted_largeblocks', 'redacted_max_blkid',
+    'redacted_many_clones',
     'redacted_mixed_recsize', 'redacted_mounts', 'redacted_negative',
     'redacted_origin', 'redacted_panic', 'redacted_props', 'redacted_resume',
     'redacted_size', 'redacted_volume']
@@ -875,8 +883,10 @@ timeout = 1200
 [tests/functional/redundancy]
 tests = ['redundancy_draid', 'redundancy_draid1', 'redundancy_draid2',
     'redundancy_draid3', 'redundancy_draid_damaged1',
-    'redundancy_draid_damaged2', 'redundancy_draid_spare1',
-    'redundancy_draid_spare2', 'redundancy_draid_spare3', 'redundancy_mirror',
+    'redundancy_draid_damaged2', 'redundancy_draid_degraded1',
+    'redundancy_draid_degraded2',
+    'redundancy_draid_spare1', 'redundancy_draid_spare2',
+    'redundancy_draid_spare3', 'redundancy_mirror',
     'redundancy_raidz', 'redundancy_raidz1', 'redundancy_raidz2',
     'redundancy_raidz3', 'redundancy_stripe']
 tags = ['functional', 'redundancy']

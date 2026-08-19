@@ -1,3 +1,4 @@
+dnl # SPDX-License-Identifier: CDDL-1.0
 dnl #
 dnl # 2.6.37 API change
 dnl # kmap_atomic changed from assigning hard-coded named slot to using
@@ -7,7 +8,7 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_KMAP_ATOMIC_ARGS], [
 	ZFS_LINUX_TEST_SRC([kmap_atomic], [
 		#include <linux/pagemap.h>
 	],[
-		struct page page;
+		struct page page = {};
 		kmap_atomic(&page);
 	])
 ])

@@ -580,7 +580,7 @@ zpool_valid_proplist(libzfs_handle_t *hdl, const char *poolname,
 		prop = zpool_name_to_prop(propname);
 		if (prop == ZPOOL_PROP_INVAL && zpool_prop_feature(propname)) {
 			int err;
-			char *fname = strchr(propname, '@') + 1;
+			const char *fname = strchr(propname, '@') + 1;
 
 			err = zfeature_lookup_name(fname, NULL);
 			if (err != 0) {
@@ -2237,6 +2237,11 @@ zpool_import_props(libzfs_handle_t *hdl, nvlist_t *config, const char *newname,
 	zcmd_free_nvlists(&zc);
 
 	zpool_get_load_policy(config, &policy);
+
+	if (getenv("ZFS_LOAD_INFO_DEBUG") && nv != NULL &&
+	    nvlist_lookup_nvlist(nv, ZPOOL_CONFIG_LOAD_INFO, &nvinfo) == 0) {
+		dump_nvlist(nvinfo, 4);
+	}
 
 	if (error) {
 		char desc[1024];

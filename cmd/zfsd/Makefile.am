@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: CDDL-1.0
 zfsd_CFLAGS = $(AM_CFLAGS)
 zfsd_CXXFLAGS = $(AM_CXXFLAGS)
 zfsd_CPPFLAGS = $(AM_CPPFLAGS)
