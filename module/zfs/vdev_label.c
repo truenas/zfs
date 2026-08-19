@@ -511,6 +511,8 @@ vdev_config_generate(spa_t *spa, vdev_t *vd, boolean_t getstats,
 		fnvlist_add_uint64(nv, ZPOOL_CONFIG_ASHIFT, vd->vdev_ashift);
 		fnvlist_add_uint64(nv, ZPOOL_CONFIG_ASIZE,
 		    vd->vdev_asize);
+		fnvlist_add_uint64(nv, ZPOOL_CONFIG_MIN_ALLOC,
+		    vdev_get_min_alloc(vd));
 		fnvlist_add_uint64(nv, ZPOOL_CONFIG_IS_LOG, vd->vdev_islog);
 		if (vd->vdev_noalloc) {
 			fnvlist_add_uint64(nv, ZPOOL_CONFIG_NONALLOCATING,
@@ -1374,6 +1376,7 @@ vdev_label_read_bootenv(vdev_t *rvd, nvlist_t *bootenv)
 				    VB_NVLIST);
 				break;
 			}
+			vbe->vbe_bootenv[sizeof (vbe->vbe_bootenv) - 1] = '\0';
 			fnvlist_add_string(bootenv, FREEBSD_BOOTONCE, buf);
 		}
 
@@ -1498,7 +1501,7 @@ retry:
  * conflicting uberblocks on disk with the same txg.  The solution is simple:
  * among uberblocks with equal txg, choose the one with the latest timestamp.
  */
-static int
+int
 vdev_uberblock_compare(const uberblock_t *ub1, const uberblock_t *ub2)
 {
 	int cmp = TREE_CMP(ub1->ub_txg, ub2->ub_txg);
@@ -1629,8 +1632,10 @@ vdev_uberblock_load(vdev_t *rvd, uberblock_t *ub, nvlist_t **config)
 	 * matches the txg for our uberblock.
 	 */
 	if (cb.ubl_vd != NULL) {
-		vdev_dbgmsg(cb.ubl_vd, "best uberblock found for spa %s. "
-		    "txg %llu", spa->spa_name, (u_longlong_t)ub->ub_txg);
+		vdev_dbgmsg(cb.ubl_vd, "best uberblock found for spa %s, "
+		    "txg=%llu seq=%llu", spa_load_name(spa),
+		    (u_longlong_t)ub->ub_txg,
+		    (u_longlong_t)(MMP_SEQ_VALID(ub) ? MMP_SEQ(ub) : 0));
 
 		if (ub->ub_raidz_reflow_info !=
 		    cb.ubl_latest.ub_raidz_reflow_info) {
@@ -1638,7 +1643,7 @@ vdev_uberblock_load(vdev_t *rvd, uberblock_t *ub, nvlist_t **config)
 			    "spa=%s best uberblock (txg=%llu info=0x%llx) "
 			    "has different raidz_reflow_info than latest "
 			    "uberblock (txg=%llu info=0x%llx)",
-			    spa->spa_name,
+			    spa_load_name(spa),
 			    (u_longlong_t)ub->ub_txg,
 			    (u_longlong_t)ub->ub_raidz_reflow_info,
 			    (u_longlong_t)cb.ubl_latest.ub_txg,

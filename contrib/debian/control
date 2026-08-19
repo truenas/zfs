@@ -102,8 +102,8 @@ Depends: ${misc:Depends}, ${shlibs:Depends}
 # The libcurl4 is loaded through dlopen("libcurl.so.4").
 # https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=988521
 Recommends: libcurl4
-Breaks: libzfs2, libzfs4
-Replaces: libzfs2, libzfs4, libzfs4linux
+Breaks: libzfs2, libzfs4, libzfs4linux, libzfs6linux, openzfs-libzfs4
+Replaces: libzfs2, libzfs4, libzfs4linux, libzfs6linux, openzfs-libzfs4
 Conflicts: libzfs4linux
 Provides: libzfs6
 Description: OpenZFS filesystem library for Linux - general support

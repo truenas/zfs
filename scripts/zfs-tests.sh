@@ -38,6 +38,7 @@ DEBUG=""
 CLEANUP="yes"
 CLEANUPALL="no"
 KMSG=""
+TIMEOUT_DEBUG=""
 LOOPBACK="yes"
 STACK_TRACER="no"
 FILESIZE="4G"
@@ -293,6 +294,16 @@ constrain_path() {
 	SYSTEM_DIRS="/usr/local/bin /usr/local/sbin"
 	SYSTEM_DIRS="$SYSTEM_DIRS /usr/bin /usr/sbin /bin /sbin $LIBEXEC_DIR"
 
+	SYSTEM_FILES="$SYSTEM_FILES_COMMON"
+	ZFSTEST_FILES="$ZFSTEST_FILES_COMMON"
+	if [ "$UNAME" = "FreeBSD" ] ; then
+		SYSTEM_FILES="$SYSTEM_FILES $SYSTEM_FILES_FREEBSD"
+		ZFSTEST_FILES="$ZFSTEST_FILES $ZFSTEST_FILES_FREEBSD"
+	else
+		SYSTEM_FILES="$SYSTEM_FILES $SYSTEM_FILES_LINUX"
+		ZFSTEST_FILES="$ZFSTEST_FILES $ZFSTEST_FILES_LINUX"
+	fi
+
 	if [ "$INTREE" = "yes" ]; then
 		# Constrained path set to $(top_builddir)/tests/zfs-tests/bin
 		STF_PATH="$BIN_DIR"
@@ -325,12 +336,6 @@ constrain_path() {
 	fi
 
 	# Standard system utilities
-	SYSTEM_FILES="$SYSTEM_FILES_COMMON"
-	if [ "$UNAME" = "FreeBSD" ] ; then
-		SYSTEM_FILES="$SYSTEM_FILES $SYSTEM_FILES_FREEBSD"
-	else
-		SYSTEM_FILES="$SYSTEM_FILES $SYSTEM_FILES_LINUX"
-	fi
 	create_links "$SYSTEM_DIRS" "$SYSTEM_FILES"
 
 	# Exceptions
@@ -364,6 +369,7 @@ OPTIONS:
 	-k          Disable cleanup after test failure
 	-K          Log test names to /dev/kmsg
 	-f          Use files only, disables block device tests
+	-O          Dump debugging info to /dev/kmsg on test timeout
 	-S          Enable stack tracer (negative performance impact)
 	-c          Only create and populate constrained path
 	-R          Automatically rerun failing tests
@@ -402,7 +408,7 @@ $0 -x
 EOF
 }
 
-while getopts 'hvqxkKfScRmn:d:Ds:r:?t:T:u:I:' OPTION; do
+while getopts 'hvqxkKfScRmOn:d:Ds:r:?t:T:u:I:' OPTION; do
 	case $OPTION in
 	h)
 		usage
@@ -444,6 +450,9 @@ while getopts 'hvqxkKfScRmn:d:Ds:r:?t:T:u:I:' OPTION; do
 		[ -f "$nfsfile" ] || fail "Cannot read file: $nfsfile"
 		export NFS=1
 		. "$nfsfile"
+		;;
+	O)
+		TIMEOUT_DEBUG="yes"
 		;;
 	d)
 		FILEDIR="$OPTARG"
@@ -773,6 +782,7 @@ msg "${TEST_RUNNER}" \
     "${DEBUG:+-D}" \
     "${KMEMLEAK:+-m}" \
     "${KMSG:+-K}" \
+    "${TIMEOUT_DEBUG:+-O}" \
     "-c \"${RUNFILES}\"" \
     "-T \"${TAGS}\"" \
     "-i \"${STF_SUITE}\"" \
@@ -783,6 +793,7 @@ msg "${TEST_RUNNER}" \
     ${DEBUG:+-D} \
     ${KMEMLEAK:+-m} \
     ${KMSG:+-K} \
+    ${TIMEOUT_DEBUG:+-O} \
     -c "${RUNFILES}" \
     -T "${TAGS}" \
     -i "${STF_SUITE}" \

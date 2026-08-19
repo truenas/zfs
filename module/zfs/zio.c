@@ -1688,9 +1688,11 @@ zio_vdev_child_io(zio_t *pio, blkptr_t *bp, vdev_t *vd, uint64_t offset,
 
 	/*
 	 * If we've decided to do a repair, the write is not speculative --
-	 * even if the original read was.
+	 * even if the original read was. Rebuild is an exception since we
+	 * cannot always ensure its data integrity.
 	 */
-	if (flags & ZIO_FLAG_IO_REPAIR)
+	if ((flags & ZIO_FLAG_IO_REPAIR) &&
+	    pio->io_priority != ZIO_PRIORITY_REBUILD)
 		flags &= ~ZIO_FLAG_SPECULATIVE;
 
 	/*
@@ -2714,6 +2716,8 @@ zio_suspend(spa_t *spa, zio_t *zio, zio_suspend_reason_t reason)
 	}
 
 	mutex_exit(&spa->spa_suspend_lock);
+
+	txg_wait_kick(spa->spa_dsl_pool);
 }
 
 int
@@ -4019,6 +4023,17 @@ zio_ddt_free(zio_t *zio)
 		ddt_phys_variant_t v = ddt_phys_select(ddt, dde, bp);
 		if (v != DDT_PHYS_NONE)
 			ddt_phys_decref(dde->dde_phys, v);
+		else
+			/*
+			 * If the entry was found but the phys was not, then
+			 * this block must have been pruned from the dedup
+			 * table, and the entry refers to a later version of
+			 * this data. Therefore, the caller is trying to delete
+			 * the only stored instance of this block, and so we
+			 * need to do a normal (not dedup) free. Clear dde so
+			 * we fall into the block below.
+			 */
+			dde = NULL;
 	}
 	ddt_exit(ddt);
 

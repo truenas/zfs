@@ -46,9 +46,11 @@ function cleanup
 
 log_onexit cleanup
 
-# Create a pool with fast dedup enabled.
+# Create a pool with fast dedup enabled. We disable block cloning to ensure
+# it doesn't get in the way of dedup.
 log_must zpool create -f \
     -o feature@fast_dedup=enabled \
+    -o feature@block_cloning=disabled \
     $TESTPOOL $DISKS
 
 # Create a filesystem with a small recordsize so that we get more DDT entries,

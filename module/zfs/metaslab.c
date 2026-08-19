@@ -454,10 +454,12 @@ metaslab_class_destroy(metaslab_class_t *mc)
 {
 	spa_t *spa = mc->mc_spa;
 
-	ASSERT(mc->mc_alloc == 0);
-	ASSERT(mc->mc_deferred == 0);
-	ASSERT(mc->mc_space == 0);
-	ASSERT(mc->mc_dspace == 0);
+	ASSERT0(mc->mc_alloc);
+	ASSERT0(mc->mc_dalloc);
+	ASSERT0(mc->mc_deferred);
+	ASSERT0(mc->mc_ddeferred);
+	ASSERT0(mc->mc_space);
+	ASSERT0(mc->mc_dspace);
 
 	for (int i = 0; i < spa->spa_alloc_count; i++) {
 		metaslab_class_allocator_t *mca = &mc->mc_allocator[i];
@@ -571,8 +573,10 @@ metaslab_class_balance(metaslab_class_t *mc, boolean_t onsync)
 		 * relative to average.  Bigger vdevs should get more to
 		 * fill up at the same time as smaller ones.
 		 */
-		if (mc->mc_space > 0 && vs->vs_space > 0) {
-			ratio = vs->vs_space / (mc->mc_space / (mc->mc_groups *
+		uint64_t mc_space = atomic_load_64(&mc->mc_space);
+		uint64_t vs_space = atomic_load_64(&vs->vs_space);
+		if (mc_space > 0 && vs_space > 0) {
+			ratio = vs_space / (mc_space / (mc->mc_groups *
 			    256) + 1);
 			mg_aliquot = mg_aliquot * ratio / 256;
 		}
@@ -593,18 +597,20 @@ metaslab_class_balance(metaslab_class_t *mc, boolean_t onsync)
 		 * queue depth, stronger enforcing the free space balance.
 		 */
 		if (metaslab_bias_enabled &&
-		    mc->mc_space > 0 && vs->vs_space > 0) {
-			uint64_t vs_free = vs->vs_space > vs->vs_alloc ?
-			    vs->vs_space - vs->vs_alloc : 0;
-			uint64_t mc_free = mc->mc_space > mc->mc_alloc ?
-			    mc->mc_space - mc->mc_alloc : 0;
+		    mc_space > 0 && vs_space > 0) {
+			uint64_t mc_alloc = atomic_load_64(&mc->mc_alloc);
+			uint64_t vs_alloc = atomic_load_64(&vs->vs_alloc);
+			uint64_t vs_free = vs_space > vs_alloc ?
+			    vs_space - vs_alloc : 0;
+			uint64_t mc_free = mc_space > mc_alloc ?
+			    mc_space - mc_alloc : 0;
 			/*
 			 * vs_fr is 16 bit fixed-point free space fraction.
 			 * mc_fr is 8 bit fixed-point free space fraction.
 			 * ratio as their quotient is 8 bit fixed-point.
 			 */
-			uint_t vs_fr = vs_free / (vs->vs_space / 65536 + 1);
-			uint_t mc_fr = mc_free / (mc->mc_space / 256 + 1);
+			uint_t vs_fr = vs_free / (vs_space / 65536 + 1);
+			uint_t mc_fr = mc_free / (mc_space / 256 + 1);
 			ratio = vs_fr / (mc_fr + 1);
 			mg->mg_aliquot = mg_aliquot * ratio / 256;
 			/* From 2.5x at 25% full to 1x at 75%. */
@@ -691,10 +697,13 @@ rotate:
 
 static void
 metaslab_class_space_update(metaslab_class_t *mc, int64_t alloc_delta,
-    int64_t defer_delta, int64_t space_delta, int64_t dspace_delta)
+    int64_t dalloc_delta, int64_t deferred_delta, int64_t ddeferred_delta,
+    int64_t space_delta, int64_t dspace_delta)
 {
 	atomic_add_64(&mc->mc_alloc, alloc_delta);
-	atomic_add_64(&mc->mc_deferred, defer_delta);
+	atomic_add_64(&mc->mc_dalloc, dalloc_delta);
+	atomic_add_64(&mc->mc_deferred, deferred_delta);
+	atomic_add_64(&mc->mc_ddeferred, ddeferred_delta);
 	atomic_add_64(&mc->mc_space, space_delta);
 	atomic_add_64(&mc->mc_dspace, dspace_delta);
 }
@@ -702,25 +711,34 @@ metaslab_class_space_update(metaslab_class_t *mc, int64_t alloc_delta,
 uint64_t
 metaslab_class_get_alloc(metaslab_class_t *mc)
 {
-	return (mc->mc_alloc);
+	return (atomic_load_64(&mc->mc_alloc));
+}
+
+uint64_t
+metaslab_class_get_dalloc(metaslab_class_t *mc)
+{
+	return (spa_deflate(mc->mc_spa) ? atomic_load_64(&mc->mc_dalloc) :
+	    atomic_load_64(&mc->mc_alloc));
 }
 
 uint64_t
 metaslab_class_get_deferred(metaslab_class_t *mc)
 {
-	return (mc->mc_deferred);
+	return (spa_deflate(mc->mc_spa) ? atomic_load_64(&mc->mc_ddeferred) :
+	    atomic_load_64(&mc->mc_deferred));
 }
 
 uint64_t
 metaslab_class_get_space(metaslab_class_t *mc)
 {
-	return (mc->mc_space);
+	return (atomic_load_64(&mc->mc_space));
 }
 
 uint64_t
 metaslab_class_get_dspace(metaslab_class_t *mc)
 {
-	return (spa_deflate(mc->mc_spa) ? mc->mc_dspace : mc->mc_space);
+	return (spa_deflate(mc->mc_spa) ? atomic_load_64(&mc->mc_dspace) :
+	    atomic_load_64(&mc->mc_space));
 }
 
 void
@@ -2784,16 +2802,21 @@ metaslab_set_selected_txg(metaslab_t *msp, uint64_t txg)
 }
 
 void
-metaslab_space_update(vdev_t *vd, metaslab_class_t *mc, int64_t alloc_delta,
+metaslab_space_update(metaslab_group_t *mg, int64_t alloc_delta,
     int64_t defer_delta, int64_t space_delta)
 {
+	vdev_t *vd = mg->mg_vd;
+	int64_t dalloc_delta = vdev_deflated_space(vd, alloc_delta);
+	int64_t ddefer_delta = vdev_deflated_space(vd, defer_delta);
+	int64_t dspace_delta = vdev_deflated_space(vd, space_delta);
+
 	vdev_space_update(vd, alloc_delta, defer_delta, space_delta);
 
 	ASSERT3P(vd->vdev_spa->spa_root_vdev, ==, vd->vdev_parent);
 	ASSERT(vd->vdev_ms_count != 0);
 
-	metaslab_class_space_update(mc, alloc_delta, defer_delta, space_delta,
-	    vdev_deflated_space(vd, space_delta));
+	metaslab_class_space_update(mg->mg_class, alloc_delta, dalloc_delta,
+	    defer_delta, ddefer_delta, space_delta, dspace_delta);
 }
 
 int
@@ -2905,8 +2928,7 @@ metaslab_init(metaslab_group_t *mg, uint64_t id, uint64_t object,
 	 */
 	if (txg <= TXG_INITIAL) {
 		metaslab_sync_done(ms, 0);
-		metaslab_space_update(vd, mg->mg_class,
-		    metaslab_allocated_space(ms), 0, 0);
+		metaslab_space_update(mg, metaslab_allocated_space(ms), 0, 0);
 	}
 
 	if (txg != 0) {
@@ -2968,9 +2990,8 @@ metaslab_fini(metaslab_t *msp)
 	 * subtracted.
 	 */
 	if (!msp->ms_new) {
-		metaslab_space_update(vd, mg->mg_class,
-		    -metaslab_allocated_space(msp), 0, -msp->ms_size);
-
+		metaslab_space_update(mg, -metaslab_allocated_space(msp), 0,
+		    -msp->ms_size);
 	}
 	space_map_close(msp->ms_sm);
 	msp->ms_sm = NULL;
@@ -4478,7 +4499,7 @@ metaslab_sync_done(metaslab_t *msp, uint64_t txg)
 
 	if (msp->ms_new) {
 		/* this is a new metaslab, add its capacity to the vdev */
-		metaslab_space_update(vd, mg->mg_class, 0, 0, msp->ms_size);
+		metaslab_space_update(mg, 0, 0, msp->ms_size);
 
 		/* there should be no allocations nor frees at this point */
 		VERIFY0(msp->ms_allocated_this_txg);
@@ -4507,8 +4528,7 @@ metaslab_sync_done(metaslab_t *msp, uint64_t txg)
 	} else {
 		defer_delta -= zfs_range_tree_space(*defer_tree);
 	}
-	metaslab_space_update(vd, mg->mg_class, alloc_delta + defer_delta,
-	    defer_delta, 0);
+	metaslab_space_update(mg, alloc_delta + defer_delta, defer_delta, 0);
 
 	if (spa_syncing_log_sm(spa) == NULL) {
 		/*
