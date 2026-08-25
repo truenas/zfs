@@ -452,6 +452,7 @@ vdev_disk_open(vdev_t *v, uint64_t *psize, uint64_t *max_psize,
 				break;
 
 			schedule_timeout_interruptible(MSEC_TO_TICK(10));
+			continue;
 		} else if (unlikely(err == -ERESTARTSYS)) {
 			timeout = MSEC2NSEC(zfs_vdev_open_timeout_ms * 10);
 			continue;
