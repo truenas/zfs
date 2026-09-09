@@ -655,8 +655,7 @@ vdev_mirror_io_start(zio_t *zio)
 				first = B_FALSE;
 			}
 
-			zio_batch_rele(zio);
-			zio_execute(zio);
+			zio_execute(zio_batch_rele(zio));
 			return;
 		}
 		/*
@@ -701,8 +700,7 @@ vdev_mirror_io_start(zio_t *zio)
 		    vdev_mirror_child_done, mc));
 	}
 
-	zio_batch_rele(zio);
-	zio_execute(zio);
+	zio_execute(zio_batch_rele(zio));
 }
 
 static int
