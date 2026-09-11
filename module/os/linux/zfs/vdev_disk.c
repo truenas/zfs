@@ -41,6 +41,10 @@
 #include <linux/msdos_fs.h>
 #include <linux/vfs_compat.h>
 #include <linux/blk-cgroup.h>
+#if defined(__x86_64__)
+#include <asm/cpufeature.h>
+#include <asm/special_insns.h>
+#endif
 
 /*
  * Linux 6.8.x uses a bdev_handle as an instance/refcount for an underlying
@@ -106,6 +110,82 @@ static uint_t zfs_vdev_open_timeout_ms = 1000;
  */
 
 static unsigned int zfs_vdev_failfast_mask = 1;
+
+#if defined(__x86_64__)
+/*
+ * Push the data out of the CPU caches before the device DMAs it.  It is
+ * never needed for correctness on a coherent platform, where a DMA read
+ * hitting a dirty line is served by forwarding it out of the cache, but on
+ * AMD Zen that forward crosses the CCD-to-IOD link, which is half as wide
+ * away from the CCD as toward it and is the busiest resource in a streaming
+ * write, and it leaves the write-once payload occupying the victim L3.
+ * Evicting the lines here lets the memory controller answer the DMA and
+ * keeps the L3 for data somebody is going to read.
+ *
+ * 0 - off, 1 - CLWB (keeps the line valid), 2 - CLFLUSHOPT (invalidates),
+ * -1 - pick automatically.
+ */
+static int zfs_vdev_cpu_cache_flush = -1;
+
+static int
+vdev_disk_cache_flush_mode(zio_t *zio)
+{
+	int mode = zfs_vdev_cpu_cache_flush;
+
+	if (zio->io_type != ZIO_TYPE_WRITE)
+		return (0);
+	if (unlikely(mode < 0)) {
+		/*
+		 * Only measured on AMD EPYC, all of which are built from
+		 * chiplets and so have the CCD-to-IOD link.  Desktop and
+		 * APU parts are left alone: a monolithic die has no such
+		 * link, and there this would trade a cheap on-die cache
+		 * forward for a DRAM read.  On Intel it showed no benefit
+		 * and CLFLUSHOPT would also defeat DDIO.
+		 *
+		 * Latched so that the module parameter reports the active
+		 * mode and the probe stays off the per-I/O path.
+		 */
+		mode = boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+		    strstr(boot_cpu_data.x86_model_id, "EPYC") != NULL &&
+		    boot_cpu_has(X86_FEATURE_CLFLUSHOPT) ? 2 : 0;
+		zfs_vdev_cpu_cache_flush = mode;
+	}
+	if (mode == 1 && !boot_cpu_has(X86_FEATURE_CLWB))
+		return (0);
+	if (mode > 1 && !boot_cpu_has(X86_FEATURE_CLFLUSHOPT))
+		return (0);
+	return (mode);
+}
+
+static void
+vdev_disk_cache_flush_range(void *buf, size_t len, int mode)
+{
+	const size_t lsize = boot_cpu_data.x86_clflush_size;
+	void *p = (void *)((uintptr_t)buf & ~(uintptr_t)(lsize - 1));
+	void *end = buf + len;
+
+	if (mode > 1) {
+		for (; p < end; p += lsize)
+			clflushopt(p);
+	} else {
+		for (; p < end; p += lsize)
+			clwb(p);
+	}
+}
+#else
+static int
+vdev_disk_cache_flush_mode(zio_t *zio __maybe_unused)
+{
+	return (0);
+}
+
+static void
+vdev_disk_cache_flush_range(void *buf __maybe_unused,
+    size_t len __maybe_unused, int mode __maybe_unused)
+{
+}
+#endif
 
 /*
  * Convert SPA mode flags into bdev open mode flags.
@@ -747,6 +827,7 @@ typedef struct {
 
 	struct bio	*vbio_bio;	/* pointer to the current bio */
 	int		vbio_flags;	/* bio flags */
+	int		vbio_cflush;	/* CPU cache flush mode */
 } vbio_t;
 
 static vbio_t *
@@ -763,6 +844,7 @@ vbio_alloc(zio_t *zio, struct block_device *bdev, int flags)
 	vbio->vbio_offset = zio->io_offset;
 	vbio->vbio_bio = NULL;
 	vbio->vbio_flags = flags;
+	vbio->vbio_cflush = vdev_disk_cache_flush_mode(zio);
 
 	return (vbio);
 }
@@ -827,6 +909,11 @@ static int
 vbio_fill_cb(struct page *page, size_t off, size_t len, void *priv)
 {
 	vbio_t *vbio = priv;
+
+	if (vbio->vbio_cflush) {
+		vdev_disk_cache_flush_range(page_address(page) + off, len,
+		    vbio->vbio_cflush);
+	}
 	return (vbio_add_page(vbio, page, len, off));
 }
 
@@ -845,7 +932,15 @@ vbio_submit(vbio_t *vbio, abd_t *abd, uint64_t size)
 	struct blk_plug plug;
 	blk_start_plug(&plug);
 
+	/*
+	 * The fences pull the preceding stores into the write back and keep
+	 * it ahead of whatever the driver does to start the transfer.
+	 */
+	if (vbio->vbio_cflush)
+		mb();
 	(void) abd_iterate_page_func(abd, 0, size, vbio_fill_cb, vbio);
+	if (vbio->vbio_cflush)
+		mb();
 	ASSERT(vbio->vbio_bio);
 
 	vbio->vbio_bio->bi_end_io = vbio_completion;
@@ -1433,3 +1528,9 @@ ZFS_MODULE_PARAM(zfs_vdev, zfs_vdev_, failfast_mask, UINT, ZMOD_RW,
 
 ZFS_MODULE_PARAM(zfs_vdev_disk, zfs_vdev_disk_, max_segs, UINT, ZMOD_RW,
 	"Maximum number of data segments to add to an IO request (min 4)");
+
+#if defined(__x86_64__)
+ZFS_MODULE_PARAM(zfs_vdev, zfs_vdev_, cpu_cache_flush, INT, ZMOD_RW,
+	"Flush CPU caches before issuing write DMA (-1 auto, 1 CLWB, "
+	"2 CLFLUSHOPT)");
+#endif

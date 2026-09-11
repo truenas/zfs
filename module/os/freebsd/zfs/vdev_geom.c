@@ -42,6 +42,11 @@
 #include <geom/geom.h>
 #include <geom/geom_disk.h>
 #include <geom/geom_int.h>
+#if defined(__amd64__) || defined(__i386__)
+#include <machine/cputypes.h>
+#include <machine/md_var.h>
+#include <machine/specialreg.h>
+#endif
 
 #ifndef g_topology_locked
 #define	g_topology_locked()	sx_xlocked(&topology_lock)
@@ -80,6 +85,104 @@ SYSCTL_INT(_vfs_zfs_vdev, OID_AUTO, bio_flush_disable, CTLFLAG_RWTUN,
 static int vdev_geom_bio_delete_disable;
 SYSCTL_INT(_vfs_zfs_vdev, OID_AUTO, bio_delete_disable, CTLFLAG_RWTUN,
 	&vdev_geom_bio_delete_disable, 0, "Disable BIO_DELETE");
+
+#if defined(__amd64__) || defined(__i386__)
+
+/*
+ * Push the data out of the CPU caches before the device DMAs it.  It is
+ * never needed for correctness on a coherent platform, where a DMA read
+ * hitting a dirty line is served by forwarding it out of the cache, but on
+ * AMD Zen that forward crosses the CCD-to-IOD link, which is half as wide
+ * away from the CCD as toward it and is the busiest resource in a streaming
+ * write, and it leaves the write-once payload occupying the victim L3.
+ * Evicting the lines here lets the memory controller answer the DMA and
+ * keeps the L3 for data somebody is going to read.
+ *
+ * 0 - off, 1 - CLWB (keeps the line valid), 2 - CLFLUSHOPT (invalidates),
+ * -1 - pick automatically.
+ */
+static int vdev_geom_cpu_cache_flush = -1;
+SYSCTL_INT(_vfs_zfs_vdev, OID_AUTO, cpu_cache_flush, CTLFLAG_RWTUN,
+	&vdev_geom_cpu_cache_flush, 0,
+	"Flush CPU caches before issuing write DMA (-1 auto, 1 CLWB, "
+	"2 CLFLUSHOPT)");
+
+static void
+vdev_geom_cache_flush_range(void *buf, size_t len, int mode)
+{
+	vm_offset_t p, end;
+
+	p = (vm_offset_t)buf & ~(vm_offset_t)(cpu_clflush_line_size - 1);
+	end = (vm_offset_t)buf + len;
+	if (mode > 1) {
+		for (; p < end; p += cpu_clflush_line_size)
+			clflushopt(p);
+	} else {
+		for (; p < end; p += cpu_clflush_line_size)
+			clwb(p);
+	}
+}
+
+static int
+vdev_geom_cache_flush_cb(void *buf, size_t len, void *priv)
+{
+	vdev_geom_cache_flush_range(buf, len, (int)(uintptr_t)priv);
+	return (0);
+}
+
+static void
+vdev_geom_cache_flush(zio_t *zio, struct bio *bp)
+{
+	int mode = vdev_geom_cpu_cache_flush;
+
+	if (__predict_false(mode < 0)) {
+		/*
+		 * Only measured on AMD EPYC, all of which are built from
+		 * chiplets and so have the CCD-to-IOD link.  Desktop and
+		 * APU parts are left alone: a monolithic die has no such
+		 * link, and there this would trade a cheap on-die cache
+		 * forward for a DRAM read.  On Intel it showed no benefit
+		 * and CLFLUSHOPT would also defeat DDIO.
+		 *
+		 * Latched so that the sysctl reports the active mode and
+		 * the probe stays off the per-I/O path.
+		 */
+		mode = cpu_vendor_id == CPU_VENDOR_AMD &&
+		    strstr(cpu_model, "EPYC") != NULL &&
+		    (cpu_stdext_feature & CPUID_STDEXT_CLFLUSHOPT) != 0 ? 2 : 0;
+		vdev_geom_cpu_cache_flush = mode;
+	}
+	if (mode == 0)
+		return;
+
+	/* The instructions fault if unsupported, so recheck every time. */
+	if (mode == 1 && (cpu_stdext_feature & CPUID_STDEXT_CLWB) == 0)
+		return;
+	if (mode > 1 && (cpu_stdext_feature & CPUID_STDEXT_CLFLUSHOPT) == 0)
+		return;
+
+	/*
+	 * The fences pull the preceding stores into the write back and keep
+	 * it ahead of whatever the driver does to start the transfer.
+	 */
+	atomic_thread_fence_seq_cst();
+	if (bp->bio_flags & BIO_UNMAPPED) {
+		abd_iterate_func(zio->io_abd, 0, zio->io_size,
+		    vdev_geom_cache_flush_cb, (void *)(uintptr_t)mode);
+	} else {
+		vdev_geom_cache_flush_range(bp->bio_data, zio->io_size, mode);
+	}
+	atomic_thread_fence_seq_cst();
+}
+
+#else
+
+static void
+vdev_geom_cache_flush(zio_t *zio __unused, struct bio *bp __unused)
+{
+}
+
+#endif
 
 /* Declare local functions */
 static void vdev_geom_detach(struct g_consumer *cp, boolean_t open_for_read);
@@ -1212,6 +1315,8 @@ vdev_geom_io_start(zio_t *zio)
 				    zio->io_size);
 			}
 		}
+		if (zio->io_type == ZIO_TYPE_WRITE)
+			vdev_geom_cache_flush(zio, bp);
 		break;
 	case ZIO_TYPE_TRIM:
 		bp->bio_cmd = BIO_DELETE;
