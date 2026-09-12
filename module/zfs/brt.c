@@ -216,9 +216,12 @@
  * At the beginning of spa_sync() where there can be no more block cloning,
  * but before issuing frees we call brt_pending_apply(). This function applies
  * all the new clones to the BRT table - we load BRT entries and update
- * reference counters. To sync new BRT entries to disk, we use brt_sync()
- * function. This function will sync all dirty per-top-level-vdev BRTs,
- * the entry counters arrays, etc.
+ * reference counters. Blocks with the DEDUP bit set are referenced in the
+ * DDT instead and are kept on separate pending trees, sorted and sharded by
+ * the DDT ZAP hash, so that syncing context can process them in parallel
+ * with sequential access to the DDT ZAP leaves. To sync new BRT entries to
+ * disk, we use brt_sync() function. This function will sync all dirty
+ * per-top-level-vdev BRTs, the entry counters arrays, etc.
  *
  * Block Cloning and ZIL.
  *
@@ -930,6 +933,19 @@ brt_maybe_exists(spa_t *spa, const blkptr_t *bp)
 	return (brt_vdev_lookup(spa, brtvd, off));
 }
 
+/*
+ * Estimate the worst-case amount of MOS data the sync thread may dirty
+ * to add, update or remove one BRT entry: one ZAP leaf block.  Unlike
+ * the DDT, BRT ZAPs do not use prehashed keys, so even consecutive
+ * offsets scatter across leaves and rarely combine.
+ */
+uint64_t
+brt_sync_dirty_est(spa_t *spa)
+{
+	(void) spa;
+	return (1ULL << brt_zap_default_bs);
+}
+
 uint64_t
 brt_get_dspace(spa_t *spa)
 {
@@ -1194,6 +1210,34 @@ brt_entry_compare(const void *x1, const void *x2)
 	    DVA_GET_OFFSET(&bp2->blk_dva[0])));
 }
 
+static int
+brt_entry_dedup_compare(const void *x1, const void *x2)
+{
+	const brt_entry_t *bre1 = x1, *bre2 = x2;
+	const blkptr_t *bp1 = &bre1->bre_bp, *bp2 = &bre2->bre_bp;
+	const uint64_t *k1 = bp1->blk_cksum.zc_word;
+	const uint64_t *k2 = bp2->blk_cksum.zc_word;
+	int cmp;
+
+	/* Sort by the checksum, matching the DDT ZAP hash order. */
+	for (int i = 0; i < (sizeof (zio_cksum_t) / sizeof (uint64_t)); i++) {
+		if (likely((cmp = TREE_CMP(k1[i], k2[i])) != 0))
+			return (cmp);
+	}
+
+	/*
+	 * The same checksum may reference different blocks if the DDT
+	 * entry for the older one was pruned.
+	 */
+	cmp = TREE_CMP(DVA_GET_VDEV(&bp1->blk_dva[0]),
+	    DVA_GET_VDEV(&bp2->blk_dva[0]));
+	if (likely(cmp == 0)) {
+		cmp = TREE_CMP(DVA_GET_OFFSET(&bp1->blk_dva[0]),
+		    DVA_GET_OFFSET(&bp2->blk_dva[0]));
+	}
+	return (cmp);
+}
+
 void
 brt_pending_add(spa_t *spa, const blkptr_t *bp, dmu_tx_t *tx)
 {
@@ -1204,14 +1248,42 @@ brt_pending_add(spa_t *spa, const blkptr_t *bp, dmu_tx_t *tx)
 	txg = dmu_tx_get_txg(tx);
 	ASSERT3U(txg, !=, 0);
 
-	uint64_t vdevid = DVA_GET_VDEV(&bp->blk_dva[0]);
-	brt_vdev_t *brtvd = brt_vdev(spa, vdevid, B_TRUE);
-	avl_tree_t *pending_tree = &brtvd->bv_pending_tree[txg & TXG_MASK];
-
 	newbre = kmem_cache_alloc(brt_entry_cache, KM_SLEEP);
 	newbre->bre_bp = *bp;
 	newbre->bre_count = 0;
 	newbre->bre_pcount = 1;
+
+	/*
+	 * Blocks with the DEDUP bit set are referenced in the DDT instead
+	 * of the BRT and are kept on separate trees until then.
+	 */
+	if (BP_GET_DEDUP(bp)) {
+		brt_dedup_shard_t *bds =
+		    &spa->spa_brt_dedup[BRT_DEDUP_SHARD(bp)];
+		avl_tree_t *pending_tree = &bds->bds_tree[txg & TXG_MASK];
+
+		mutex_enter(&bds->bds_lock);
+		bre = avl_find(pending_tree, newbre, &where);
+		if (bre == NULL) {
+			avl_insert(pending_tree, newbre, where);
+			newbre = NULL;
+		} else {
+			bre->bre_pcount++;
+		}
+		mutex_exit(&bds->bds_lock);
+
+		if (newbre != NULL) {
+			kmem_cache_free(brt_entry_cache, newbre);
+		} else {
+			/* Prefetch DDT entry for the syncing context. */
+			ddt_prefetch(spa, bp);
+		}
+		return;
+	}
+
+	uint64_t vdevid = DVA_GET_VDEV(&bp->blk_dva[0]);
+	brt_vdev_t *brtvd = brt_vdev(spa, vdevid, B_TRUE);
+	avl_tree_t *pending_tree = &brtvd->bv_pending_tree[txg & TXG_MASK];
 
 	mutex_enter(&brtvd->bv_pending_lock);
 	bre = avl_find(pending_tree, newbre, &where);
@@ -1244,14 +1316,24 @@ brt_pending_remove(spa_t *spa, const blkptr_t *bp, dmu_tx_t *tx)
 	txg = dmu_tx_get_txg(tx);
 	ASSERT3U(txg, !=, 0);
 
-	uint64_t vdevid = DVA_GET_VDEV(&bp->blk_dva[0]);
-	brt_vdev_t *brtvd = brt_vdev(spa, vdevid, B_FALSE);
-	ASSERT(brtvd != NULL);
-	avl_tree_t *pending_tree = &brtvd->bv_pending_tree[txg & TXG_MASK];
-
 	bre_search.bre_bp = *bp;
 
-	mutex_enter(&brtvd->bv_pending_lock);
+	kmutex_t *pending_lock;
+	avl_tree_t *pending_tree;
+	if (BP_GET_DEDUP(bp)) {
+		brt_dedup_shard_t *bds =
+		    &spa->spa_brt_dedup[BRT_DEDUP_SHARD(bp)];
+		pending_lock = &bds->bds_lock;
+		pending_tree = &bds->bds_tree[txg & TXG_MASK];
+	} else {
+		uint64_t vdevid = DVA_GET_VDEV(&bp->blk_dva[0]);
+		brt_vdev_t *brtvd = brt_vdev(spa, vdevid, B_FALSE);
+		ASSERT(brtvd != NULL);
+		pending_lock = &brtvd->bv_pending_lock;
+		pending_tree = &brtvd->bv_pending_tree[txg & TXG_MASK];
+	}
+
+	mutex_enter(pending_lock);
 	bre = avl_find(pending_tree, &bre_search, NULL);
 	ASSERT(bre != NULL);
 	ASSERT(bre->bre_pcount > 0);
@@ -1260,15 +1342,25 @@ brt_pending_remove(spa_t *spa, const blkptr_t *bp, dmu_tx_t *tx)
 		avl_remove(pending_tree, bre);
 	else
 		bre = NULL;
-	mutex_exit(&brtvd->bv_pending_lock);
+	mutex_exit(pending_lock);
 
 	if (bre)
 		kmem_cache_free(brt_entry_cache, bre);
 }
 
+typedef struct brt_pending_vdev_arg {
+	spa_t		*bpva_spa;
+	brt_vdev_t	*bpva_brtvd;
+	uint64_t	bpva_txg;
+} brt_pending_vdev_arg_t;
+
 static void
-brt_pending_apply_vdev(spa_t *spa, brt_vdev_t *brtvd, uint64_t txg)
+brt_pending_apply_vdev(void *arg)
 {
+	brt_pending_vdev_arg_t *bpva = arg;
+	spa_t *spa = bpva->bpva_spa;
+	brt_vdev_t *brtvd = bpva->bpva_brtvd;
+	uint64_t txg = bpva->bpva_txg;
 	brt_entry_t *bre, *nbre;
 
 	/*
@@ -1280,24 +1372,6 @@ brt_pending_apply_vdev(spa_t *spa, brt_vdev_t *brtvd, uint64_t txg)
 
 	for (bre = avl_first(&brtvd->bv_tree); bre; bre = nbre) {
 		nbre = AVL_NEXT(&brtvd->bv_tree, bre);
-
-		/*
-		 * If the block has DEDUP bit set, it means that it
-		 * already exists in the DEDUP table, so we can just
-		 * use that instead of creating new entry in the BRT.
-		 */
-		if (BP_GET_DEDUP(&bre->bre_bp)) {
-			while (bre->bre_pcount > 0) {
-				if (!ddt_addref(spa, &bre->bre_bp))
-					break;
-				bre->bre_pcount--;
-			}
-			if (bre->bre_pcount == 0) {
-				avl_remove(&brtvd->bv_tree, bre);
-				kmem_cache_free(brt_entry_cache, bre);
-				continue;
-			}
-		}
 
 		/*
 		 * Unless we know that the block is definitely not in ZAP,
@@ -1327,10 +1401,7 @@ brt_pending_apply_vdev(spa_t *spa, brt_vdev_t *brtvd, uint64_t txg)
 		}
 	}
 
-	/*
-	 * If all the cloned blocks we had were handled by DDT, we don't need
-	 * to initiate the vdev.
-	 */
+	/* If we had no new clones for this vdev, we don't need to initiate. */
 	if (avl_is_empty(&brtvd->bv_tree))
 		return;
 
@@ -1353,20 +1424,112 @@ brt_pending_apply_vdev(spa_t *spa, brt_vdev_t *brtvd, uint64_t txg)
 	}
 }
 
+typedef struct brt_pending_dedup_arg {
+	spa_t		*bpda_spa;
+	avl_tree_t	*bpda_tree;
+} brt_pending_dedup_arg_t;
+
+static void
+brt_pending_apply_dedup(void *arg)
+{
+	brt_pending_dedup_arg_t *bpda = arg;
+	spa_t *spa = bpda->bpda_spa;
+	avl_tree_t *tree = bpda->bpda_tree;
+	brt_entry_t *bre, *nbre;
+
+	for (bre = avl_first(tree); bre; bre = nbre) {
+		nbre = AVL_NEXT(tree, bre);
+		while (bre->bre_pcount > 0) {
+			if (!ddt_addref(spa, &bre->bre_bp))
+				break;
+			bre->bre_pcount--;
+		}
+		if (bre->bre_pcount == 0) {
+			avl_remove(tree, bre);
+			kmem_cache_free(brt_entry_cache, bre);
+		}
+		/* Else leave it for the caller to reference in the BRT. */
+	}
+}
+
 void
 brt_pending_apply(spa_t *spa, uint64_t txg)
 {
+	brt_pending_dedup_arg_t bpda[BRT_DEDUP_SHARDS];
+	taskq_t *tq = spa->spa_dsl_pool->dp_sync_taskq;
 
+	/*
+	 * We are in syncing context, so no open context accesses to the
+	 * pending trees of this TXG are possible and we need no locks.
+	 *
+	 * Reference the dedup'd blocks in the DDT.  Process the shards in
+	 * parallel, since random DDT ZAP lookups are CPU-expensive due to
+	 * the leaf block decompression.  Each shard covers a disjoint part
+	 * of the DDT ZAP hash space and is walked in the hash order, so
+	 * each leaf is decompressed at most once and only by one thread.
+	 */
+	for (int i = 0; i < BRT_DEDUP_SHARDS; i++) {
+		avl_tree_t *tree =
+		    &spa->spa_brt_dedup[i].bds_tree[txg & TXG_MASK];
+		if (avl_is_empty(tree))
+			continue;
+		bpda[i].bpda_spa = spa;
+		bpda[i].bpda_tree = tree;
+		VERIFY(taskq_dispatch(tq, brt_pending_apply_dedup,
+		    &bpda[i], TQ_SLEEP) != TASKQID_INVALID);
+	}
+	taskq_wait(tq);
+
+	/*
+	 * Turn blocks that could not be referenced in the DDT (their
+	 * entries were pruned or are over the dedup quota) into regular
+	 * BRT pending entries for their vdevs.
+	 */
+	for (int i = 0; i < BRT_DEDUP_SHARDS; i++) {
+		avl_tree_t *tree =
+		    &spa->spa_brt_dedup[i].bds_tree[txg & TXG_MASK];
+		brt_entry_t *bre;
+		void *cookie = NULL;
+
+		while ((bre = avl_destroy_nodes(tree, &cookie)) != NULL) {
+			uint64_t vdevid = DVA_GET_VDEV(&bre->bre_bp.blk_dva[0]);
+			brt_vdev_t *brtvd = brt_vdev(spa, vdevid, B_TRUE);
+			avl_add(&brtvd->bv_pending_tree[txg & TXG_MASK], bre);
+		}
+	}
+
+	/*
+	 * Add pending references to the BRTs of their vdevs.  Process the
+	 * vdevs in parallel, since random BRT ZAP lookups are CPU-expensive
+	 * due to the leaf block decompression.  The BRT ZAP hash is salted,
+	 * so unlike the DDT above the lookups can not be ordered to match
+	 * the leaf blocks order.
+	 */
 	brt_rlock(spa);
-	for (uint64_t vdevid = 0; vdevid < spa->spa_brt_nvdevs; vdevid++) {
+	uint64_t nvdevs = spa->spa_brt_nvdevs;
+	brt_unlock(spa);
+	if (nvdevs == 0)
+		return;
+	brt_pending_vdev_arg_t *bpva =
+	    kmem_zalloc(sizeof (*bpva) * nvdevs, KM_SLEEP);
+	brt_rlock(spa);
+	for (uint64_t vdevid = 0; vdevid < nvdevs; vdevid++) {
 		brt_vdev_t *brtvd = spa->spa_brt_vdevs[vdevid];
-		brt_unlock(spa);
-
-		brt_pending_apply_vdev(spa, brtvd, txg);
-
-		brt_rlock(spa);
+		if (avl_is_empty(&brtvd->bv_pending_tree[txg & TXG_MASK]))
+			continue;
+		bpva[vdevid].bpva_spa = spa;
+		bpva[vdevid].bpva_brtvd = brtvd;
+		bpva[vdevid].bpva_txg = txg;
 	}
 	brt_unlock(spa);
+	for (uint64_t vdevid = 0; vdevid < nvdevs; vdevid++) {
+		if (bpva[vdevid].bpva_spa == NULL)
+			continue;
+		VERIFY(taskq_dispatch(tq, brt_pending_apply_vdev,
+		    &bpva[vdevid], TQ_SLEEP) != TASKQID_INVALID);
+	}
+	taskq_wait(tq);
+	kmem_free(bpva, sizeof (*bpva) * nvdevs);
 }
 
 static void
@@ -1467,6 +1630,18 @@ brt_alloc(spa_t *spa)
 	spa->spa_brt_vdevs = NULL;
 	spa->spa_brt_nvdevs = 0;
 	spa->spa_brt_rangesize = 0;
+
+	spa->spa_brt_dedup = kmem_zalloc(sizeof (brt_dedup_shard_t) *
+	    BRT_DEDUP_SHARDS, KM_SLEEP);
+	for (int i = 0; i < BRT_DEDUP_SHARDS; i++) {
+		brt_dedup_shard_t *bds = &spa->spa_brt_dedup[i];
+		mutex_init(&bds->bds_lock, NULL, MUTEX_DEFAULT, NULL);
+		for (int t = 0; t < TXG_SIZE; t++) {
+			avl_create(&bds->bds_tree[t], brt_entry_dedup_compare,
+			    sizeof (brt_entry_t),
+			    offsetof(brt_entry_t, bre_node));
+		}
+	}
 }
 
 void
@@ -1551,6 +1726,16 @@ brt_unload(spa_t *spa)
 	brt_vdevs_free(spa);
 	rw_destroy(&spa->spa_brt_lock);
 	spa->spa_brt_rangesize = 0;
+
+	for (int i = 0; i < BRT_DEDUP_SHARDS; i++) {
+		brt_dedup_shard_t *bds = &spa->spa_brt_dedup[i];
+		for (int t = 0; t < TXG_SIZE; t++)
+			avl_destroy(&bds->bds_tree[t]);
+		mutex_destroy(&bds->bds_lock);
+	}
+	kmem_free(spa->spa_brt_dedup, sizeof (brt_dedup_shard_t) *
+	    BRT_DEDUP_SHARDS);
+	spa->spa_brt_dedup = NULL;
 }
 
 ZFS_MODULE_PARAM(zfs_brt, , brt_zap_prefetch, INT, ZMOD_RW,

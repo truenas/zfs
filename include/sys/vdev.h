@@ -186,6 +186,7 @@ extern void vdev_queue_init(vdev_t *vd);
 extern void vdev_queue_fini(vdev_t *vd);
 extern zio_t *vdev_queue_io(zio_t *zio);
 extern void vdev_queue_io_done(zio_t *zio);
+extern boolean_t vdev_should_queue_io(zio_t *zio);
 extern void vdev_queue_change_io_priority(zio_t *zio, zio_priority_t priority);
 
 extern uint32_t vdev_queue_length(vdev_t *vd);
@@ -195,7 +196,8 @@ extern boolean_t vdev_queue_pool_busy(spa_t *spa);
 
 extern void vdev_config_dirty(vdev_t *vd);
 extern void vdev_config_clean(vdev_t *vd);
-extern int vdev_config_sync(vdev_t **svd, int svdcount, uint64_t txg);
+extern int vdev_config_sync(spa_t *spa, vdev_t **svd, int svdcount,
+    uint64_t txg);
 
 extern void vdev_state_dirty(vdev_t *vd);
 extern void vdev_state_clean(vdev_t *vd);
@@ -229,7 +231,8 @@ extern void vdev_label_write(zio_t *zio, vdev_t *vd, int l, abd_t *buf, uint64_t
     offset, uint64_t size, zio_done_func_t *done, void *priv, int flags);
 extern int vdev_label_read_bootenv(vdev_t *, nvlist_t *);
 extern int vdev_label_write_bootenv(vdev_t *, nvlist_t *);
-extern int vdev_uberblock_sync_list(vdev_t **, int, struct uberblock *, int);
+extern int vdev_uberblock_sync_list(spa_t *, vdev_t **, int,
+    struct uberblock *, int);
 extern int vdev_uberblock_compare(const struct uberblock *,
     const struct uberblock *);
 extern int vdev_check_boot_reserve(spa_t *, vdev_t *);

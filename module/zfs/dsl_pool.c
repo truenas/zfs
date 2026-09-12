@@ -226,6 +226,10 @@ dsl_pool_open_impl(spa_t *spa, uint64_t txg)
 		aggsum_init(&dp->dp_wrlog_pertxg[i], 0);
 	}
 
+	wmsum_init(&dp->dp_mos_used_delta, 0);
+	wmsum_init(&dp->dp_mos_compressed_delta, 0);
+	wmsum_init(&dp->dp_mos_uncompressed_delta, 0);
+
 	dp->dp_zrele_taskq = taskq_create("z_zrele", 100, defclsyspri,
 	    boot_ncpus * 8, INT_MAX, TASKQ_PREPOPULATE | TASKQ_DYNAMIC |
 	    TASKQ_THREADS_CPU_PCT);
@@ -437,6 +441,10 @@ dsl_pool_close(dsl_pool_t *dp)
 		aggsum_fini(&dp->dp_wrlog_pertxg[i]);
 	}
 
+	wmsum_fini(&dp->dp_mos_used_delta);
+	wmsum_fini(&dp->dp_mos_compressed_delta);
+	wmsum_fini(&dp->dp_mos_uncompressed_delta);
+
 	taskq_destroy(dp->dp_unlinked_drain_taskq);
 	taskq_destroy(dp->dp_zrele_taskq);
 	if (dp->dp_blkstats != NULL)
@@ -572,11 +580,9 @@ dsl_pool_mos_diduse_space(dsl_pool_t *dp,
     int64_t used, int64_t comp, int64_t uncomp)
 {
 	ASSERT3U(comp, ==, uncomp); /* it's all metadata */
-	mutex_enter(&dp->dp_lock);
-	dp->dp_mos_used_delta += used;
-	dp->dp_mos_compressed_delta += comp;
-	dp->dp_mos_uncompressed_delta += uncomp;
-	mutex_exit(&dp->dp_lock);
+	wmsum_add(&dp->dp_mos_used_delta, used);
+	wmsum_add(&dp->dp_mos_compressed_delta, comp);
+	wmsum_add(&dp->dp_mos_uncompressed_delta, uncomp);
 }
 
 static void
@@ -803,15 +809,15 @@ dsl_pool_sync(dsl_pool_t *dp, uint64_t txg)
 	 * (dp_mos_dir).  We can't modify the mos while we're syncing
 	 * it, so we remember the deltas and apply them here.
 	 */
-	if (dp->dp_mos_used_delta != 0 || dp->dp_mos_compressed_delta != 0 ||
-	    dp->dp_mos_uncompressed_delta != 0) {
+	int64_t mos_used = wmsum_value(&dp->dp_mos_used_delta);
+	int64_t mos_comp = wmsum_value(&dp->dp_mos_compressed_delta);
+	int64_t mos_uncomp = wmsum_value(&dp->dp_mos_uncompressed_delta);
+	if (mos_used != 0 || mos_comp != 0 || mos_uncomp != 0) {
 		dsl_dir_diduse_space(dp->dp_mos_dir, DD_USED_HEAD,
-		    dp->dp_mos_used_delta,
-		    dp->dp_mos_compressed_delta,
-		    dp->dp_mos_uncompressed_delta, tx);
-		dp->dp_mos_used_delta = 0;
-		dp->dp_mos_compressed_delta = 0;
-		dp->dp_mos_uncompressed_delta = 0;
+		    mos_used, mos_comp, mos_uncomp, tx);
+		wmsum_add(&dp->dp_mos_used_delta, -mos_used);
+		wmsum_add(&dp->dp_mos_compressed_delta, -mos_comp);
+		wmsum_add(&dp->dp_mos_uncompressed_delta, -mos_uncomp);
 	}
 
 	if (dmu_objset_is_dirty(mos, txg)) {
@@ -876,6 +882,9 @@ dsl_pool_sync_done(dsl_pool_t *dp, uint64_t txg)
 		ASSERT(!dmu_objset_is_dirty(zilog->zl_os, txg));
 		dmu_buf_rele(ds->ds_dbuf, zilog);
 	}
+
+	/* Release whatever is left of this txg's sync dirty reservations. */
+	dsl_pool_sync_unreserve(dp, UINT64_MAX, txg);
 
 	dsl_pool_wrlog_clear(dp, txg);
 
@@ -974,7 +983,8 @@ dsl_pool_need_dirty_delay(dsl_pool_t *dp)
 	 * 32-bit due to memory constraints.  Pool-wide locks in hot path may
 	 * be too expensive, while we do not need a precise result here.
 	 */
-	return (dp->dp_dirty_total > delay_min_bytes);
+	return (dp->dp_dirty_total + dp->dp_sync_reserve_total >
+	    delay_min_bytes);
 }
 
 static boolean_t
@@ -982,7 +992,8 @@ dsl_pool_need_dirty_sync(dsl_pool_t *dp, uint64_t txg)
 {
 	uint64_t dirty_min_bytes =
 	    zfs_dirty_data_max * zfs_dirty_data_sync_percent / 100;
-	uint64_t dirty = dp->dp_dirty_pertxg[txg & TXG_MASK];
+	uint64_t dirty = dp->dp_dirty_pertxg[txg & TXG_MASK] +
+	    dp->dp_sync_reserve_pertxg[txg & TXG_MASK];
 
 	return (dirty > dirty_min_bytes);
 }
@@ -1003,6 +1014,41 @@ dsl_pool_dirty_space(dsl_pool_t *dp, int64_t space, dmu_tx_t *tx)
 	}
 }
 
+/*
+ * Account for dirtied MOS data.  If dirtied in syncing context, in
+ * addition to the regular dirty space accounting it consumes the sync
+ * reservations made for the expected sync overhead (DDT/BRT ZAP
+ * updates, etc), so that the same data are not accounted against the
+ * write throttle twice.
+ */
+void
+dsl_pool_dirty_mos_space(dsl_pool_t *dp, int64_t space, dmu_tx_t *tx)
+{
+	/*
+	 * The MOS may also be dirtied by the pool creation or open
+	 * contexts (e.g. pool history).  Those have no sync reservations
+	 * to consume and are accounted as regular dirty data.
+	 */
+	if (tx->tx_txg != spa_syncing_txg(dp->dp_spa)) {
+		dsl_pool_dirty_space(dp, space, tx);
+		return;
+	}
+
+	if (space <= 0)
+		return;
+
+	uint64_t txgoff = tx->tx_txg & TXG_MASK;
+	mutex_enter(&dp->dp_lock);
+	uint64_t resv = MIN((uint64_t)space,
+	    dp->dp_sync_reserve_pertxg[txgoff]);
+	dp->dp_sync_reserve_pertxg[txgoff] -= resv;
+	ASSERT3U(dp->dp_sync_reserve_total, >=, resv);
+	dp->dp_sync_reserve_total -= resv;
+	dp->dp_dirty_pertxg[txgoff] += space;
+	dsl_pool_dirty_delta(dp, space);
+	mutex_exit(&dp->dp_lock);
+}
+
 void
 dsl_pool_undirty_space(dsl_pool_t *dp, int64_t space, uint64_t txg)
 {
@@ -1019,6 +1065,48 @@ dsl_pool_undirty_space(dsl_pool_t *dp, int64_t space, uint64_t txg)
 	dp->dp_dirty_pertxg[txg & TXG_MASK] -= space;
 	ASSERT3U(dp->dp_dirty_total, >=, space);
 	dsl_pool_dirty_delta(dp, -space);
+	mutex_exit(&dp->dp_lock);
+}
+
+/*
+ * Reserve dirty space for the MOS updates (DDT/BRT ZAPs, etc) expected
+ * to be produced later by the sync thread on behalf of operations either
+ * assigned to this txg in open context or, in case of async destroys,
+ * performed by the sync thread itself earlier in this txg's sync.  While
+ * active, the reservation creates the same write throttle pressure as
+ * regular dirty data.  It is drained as the sync thread actually dirties
+ * MOS buffers, and any remainder is released when the txg sync completes.
+ */
+void
+dsl_pool_sync_reserve(dsl_pool_t *dp, uint64_t space, dmu_tx_t *tx)
+{
+	if (space == 0)
+		return;
+
+	mutex_enter(&dp->dp_lock);
+	dp->dp_sync_reserve_pertxg[tx->tx_txg & TXG_MASK] += space;
+	dp->dp_sync_reserve_total += space;
+	boolean_t needsync = !dmu_tx_is_syncing(tx) &&
+	    dsl_pool_need_dirty_sync(dp, tx->tx_txg);
+	mutex_exit(&dp->dp_lock);
+
+	if (needsync)
+		txg_kick(dp, tx->tx_txg);
+}
+
+void
+dsl_pool_sync_unreserve(dsl_pool_t *dp, uint64_t space, uint64_t txg)
+{
+	ASSERT3U(txg, ==, spa_syncing_txg(dp->dp_spa));
+
+	if (space == 0)
+		return;
+
+	mutex_enter(&dp->dp_lock);
+	space = MIN(space, dp->dp_sync_reserve_pertxg[txg & TXG_MASK]);
+	dp->dp_sync_reserve_pertxg[txg & TXG_MASK] -= space;
+	ASSERT3U(dp->dp_sync_reserve_total, >=, space);
+	dp->dp_sync_reserve_total -= space;
 	mutex_exit(&dp->dp_lock);
 }
 

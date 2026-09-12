@@ -2992,6 +2992,9 @@ spa_claim_notify(zio_t *zio)
 
 typedef struct spa_load_error {
 	boolean_t	sle_verify_data;
+	boolean_t	sle_relaxmeta;	/* tolerate non-critical meta-data */
+	uint64_t	sle_maxmeta;	/* max acceptable meta-data errors */
+	uint64_t	sle_maxdata;	/* max acceptable data errors */
 	uint64_t	sle_meta_count;
 	uint64_t	sle_data_count;
 } spa_load_error_t;
@@ -3007,8 +3010,23 @@ spa_load_verify_done(zio_t *zio)
 
 	abd_free(zio->io_abd);
 	if (error) {
-		if ((BP_GET_LEVEL(bp) != 0 || DMU_OT_IS_METADATA(type)) &&
-		    type != DMU_OT_INTENT_LOG)
+		boolean_t meta;
+
+		if (type == DMU_OT_INTENT_LOG) {
+			meta = B_FALSE;
+		} else if (zio->io_bookmark.zb_objset == DMU_META_OBJSET) {
+			meta = B_TRUE;
+		} else if (sle->sle_relaxmeta) {
+			/*
+			 * Losing a file or a directory costs us the affected
+			 * objects, but the pool as a whole remains operable.
+			 */
+			meta = DMU_OT_IS_CRITICAL(type, BP_GET_LEVEL(bp));
+		} else {
+			meta = BP_GET_LEVEL(bp) != 0 ||
+			    DMU_OT_IS_METADATA(type);
+		}
+		if (meta)
 			atomic_inc_64(&sle->sle_meta_count);
 		else
 			atomic_inc_64(&sle->sle_data_count);
@@ -3044,6 +3062,14 @@ spa_load_verify_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
 	 */
 	if (!spa_load_verify_metadata)
 		return (0);
+
+	/*
+	 * Stop the traversal as soon as the verdict is known, there is no
+	 * point in counting the errors we are not going to tolerate anyway.
+	 */
+	if (sle->sle_meta_count > sle->sle_maxmeta ||
+	    sle->sle_data_count > sle->sle_maxdata)
+		return (SET_ERROR(ECANCELED));
 
 	/*
 	 * Sanity check the block pointer in order to detect obvious damage
@@ -3098,7 +3124,7 @@ spa_load_verify(spa_t *spa)
 	zio_t *rio;
 	spa_load_error_t sle = { 0 };
 	zpool_load_policy_t policy;
-	boolean_t verify_ok = B_FALSE;
+	boolean_t verify_ok = B_FALSE, aborted = B_FALSE;
 	int error = 0;
 
 	zpool_get_load_policy(spa->spa_config, &policy);
@@ -3116,11 +3142,29 @@ spa_load_verify(spa_t *spa)
 		return (error);
 
 	/*
-	 * Verify data only if we are rewinding or error limit was set.
-	 * Otherwise nothing except dbgmsg care about it to waste time.
+	 * Verify data only if somebody is going to look at the error count:
+	 * either the caller set a limit for it, or we are only searching for
+	 * the best txg without rewinding to it (zpool import -nF), which
+	 * reports the count back to the user.
 	 */
-	sle.sle_verify_data = (policy.zlp_rewind & ZPOOL_REWIND_MASK) ||
-	    (policy.zlp_maxdata < UINT64_MAX);
+	sle.sle_verify_data = policy.zlp_maxdata < UINT64_MAX ||
+	    ((policy.zlp_rewind & ZPOOL_REWIND_MASK) &&
+	    (spa_load_verify_dryrun ||
+	    spa->spa_load_state != SPA_LOAD_RECOVER));
+
+	sle.sle_relaxmeta = policy.zlp_relaxmeta;
+
+	/*
+	 * Dry run reports the errors instead of acting on them, so it needs
+	 * the complete counts.  Otherwise stop counting once the thresholds
+	 * are exceeded, since the result can not change after that.
+	 */
+	if (spa_load_verify_dryrun) {
+		sle.sle_maxmeta = sle.sle_maxdata = UINT64_MAX;
+	} else {
+		sle.sle_maxmeta = policy.zlp_maxmeta;
+		sle.sle_maxdata = policy.zlp_maxdata;
+	}
 
 	rio = zio_root(spa, NULL, &sle,
 	    ZIO_FLAG_CANFAIL | ZIO_FLAG_SPECULATIVE);
@@ -3129,14 +3173,24 @@ spa_load_verify(spa_t *spa)
 		if (spa->spa_extreme_rewind) {
 			spa_load_note(spa, "performing a complete scan of the "
 			    "pool since extreme rewind is on. This may take "
-			    "a very long time.\n  (spa_load_verify_data=%u, "
-			    "spa_load_verify_metadata=%u)",
-			    spa_load_verify_data, spa_load_verify_metadata);
+			    "a very long time.\n  (verifying metadata=%u, "
+			    "data=%u)", spa_load_verify_metadata,
+			    spa_load_verify_data && sle.sle_verify_data);
 		}
 
 		error = traverse_pool(spa, spa->spa_verify_min_txg,
 		    TRAVERSE_PRE | TRAVERSE_PREFETCH_METADATA |
-		    TRAVERSE_NO_DECRYPT, spa_load_verify_cb, rio);
+		    TRAVERSE_NO_DECRYPT | TRAVERSE_HARD,
+		    spa_load_verify_cb, rio);
+
+		/*
+		 * We aborted the traversal ourselves, so this is not a real
+		 * error, only the error counts below are now lower bounds.
+		 */
+		if (error == ECANCELED) {
+			error = 0;
+			aborted = B_TRUE;
+		}
 	}
 
 	(void) zio_wait(rio);
@@ -3146,25 +3200,34 @@ spa_load_verify(spa_t *spa)
 	spa->spa_load_data_errors = sle.sle_data_count;
 
 	if (sle.sle_meta_count != 0 || sle.sle_data_count != 0) {
-		spa_load_note(spa, "spa_load_verify found %llu metadata errors "
-		    "and %llu data errors", (u_longlong_t)sle.sle_meta_count,
+		spa_load_note(spa, "spa_load_verify found %s%llu metadata "
+		    "errors and %llu data errors",
+		    aborted ? "at least " : "",
+		    (u_longlong_t)sle.sle_meta_count,
 		    (u_longlong_t)sle.sle_data_count);
 	}
 
 	if (spa_load_verify_dryrun ||
 	    (!error && sle.sle_meta_count <= policy.zlp_maxmeta &&
 	    sle.sle_data_count <= policy.zlp_maxdata)) {
-		int64_t loss = 0;
-
 		verify_ok = B_TRUE;
 		spa->spa_load_txg = spa->spa_uberblock.ub_txg;
 		spa->spa_load_txg_ts = spa->spa_uberblock.ub_timestamp;
 
-		loss = spa->spa_last_ubsync_txg_ts - spa->spa_load_txg_ts;
+		fnvlist_add_uint64(spa->spa_load_info, ZPOOL_CONFIG_LOAD_TXG,
+		    spa->spa_load_txg);
 		fnvlist_add_uint64(spa->spa_load_info, ZPOOL_CONFIG_LOAD_TIME,
 		    spa->spa_load_txg_ts);
-		fnvlist_add_int64(spa->spa_load_info, ZPOOL_CONFIG_REWIND_TIME,
-		    loss);
+		/*
+		 * The loss makes sense only for a fallback to an older
+		 * uberblock, which is the only case we know the newest one in.
+		 */
+		if (spa->spa_last_ubsync_txg_ts != 0) {
+			fnvlist_add_int64(spa->spa_load_info,
+			    ZPOOL_CONFIG_REWIND_TIME,
+			    spa->spa_last_ubsync_txg_ts -
+			    spa->spa_load_txg_ts);
+		}
 		fnvlist_add_uint64(spa->spa_load_info,
 		    ZPOOL_CONFIG_LOAD_META_ERRORS, sle.sle_meta_count);
 		fnvlist_add_uint64(spa->spa_load_info,
@@ -5548,15 +5611,25 @@ spa_ld_open_aux_vdevs(spa_t *spa, spa_import_type_t type)
 		return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, EIO));
 	if (error == 0 && type != SPA_IMPORT_ASSEMBLE) {
 		ASSERT(spa_version(spa) >= SPA_VERSION_SPARES);
-		if (load_nvlist(spa, spa->spa_spares.sav_object,
-		    &spa->spa_spares.sav_config) != 0) {
-			spa_load_failed(spa, "error loading spares nvlist");
-			return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, EIO));
+		error = load_nvlist(spa, spa->spa_spares.sav_object,
+		    &spa->spa_spares.sav_config);
+		if (error != 0) {
+			if (!zfs_recover && spa_writeable(spa)) {
+				spa_load_failed(spa, "error loading spares "
+				    "nvlist [error=%d]", error);
+				return (spa_vdev_err(rvd,
+				    VDEV_AUX_CORRUPT_DATA, EIO));
+			}
+			spa_load_note(spa, "ignoring spares nvlist "
+			    "[error=%d], no spares will be available", error);
+			/* Leak the object, its dnode may be unreadable. */
+			spa->spa_spares.sav_object = 0;
+			spa->spa_spares.sav_sync = B_TRUE;
+		} else {
+			spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
+			spa_load_spares(spa);
+			spa_config_exit(spa, SCL_ALL, FTAG);
 		}
-
-		spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
-		spa_load_spares(spa);
-		spa_config_exit(spa, SCL_ALL, FTAG);
 	} else if (error == 0) {
 		spa->spa_spares.sav_sync = B_TRUE;
 	}
@@ -5570,15 +5643,25 @@ spa_ld_open_aux_vdevs(spa_t *spa, spa_import_type_t type)
 		return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, EIO));
 	if (error == 0 && type != SPA_IMPORT_ASSEMBLE) {
 		ASSERT(spa_version(spa) >= SPA_VERSION_L2CACHE);
-		if (load_nvlist(spa, spa->spa_l2cache.sav_object,
-		    &spa->spa_l2cache.sav_config) != 0) {
-			spa_load_failed(spa, "error loading l2cache nvlist");
-			return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, EIO));
+		error = load_nvlist(spa, spa->spa_l2cache.sav_object,
+		    &spa->spa_l2cache.sav_config);
+		if (error != 0) {
+			if (!zfs_recover && spa_writeable(spa)) {
+				spa_load_failed(spa, "error loading l2cache "
+				    "nvlist [error=%d]", error);
+				return (spa_vdev_err(rvd,
+				    VDEV_AUX_CORRUPT_DATA, EIO));
+			}
+			spa_load_note(spa, "ignoring l2cache nvlist "
+			    "[error=%d], no l2cache will be available", error);
+			/* Leak the object, its dnode may be unreadable. */
+			spa->spa_l2cache.sav_object = 0;
+			spa->spa_l2cache.sav_sync = B_TRUE;
+		} else {
+			spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
+			spa_load_l2cache(spa);
+			spa_config_exit(spa, SCL_ALL, FTAG);
 		}
-
-		spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
-		spa_load_l2cache(spa);
-		spa_config_exit(spa, SCL_ALL, FTAG);
 	} else if (error == 0) {
 		spa->spa_l2cache.sav_sync = B_TRUE;
 	}
@@ -5982,7 +6065,8 @@ spa_ld_checkpoint_rewind(spa_t *spa)
 			if (svdcount == SPA_SYNC_MIN_VDEVS)
 				break;
 		}
-		error = vdev_config_sync(svd, svdcount, spa->spa_first_txg);
+		error = vdev_config_sync(spa, svd, svdcount,
+		    spa->spa_first_txg);
 		if (error == 0)
 			spa->spa_last_synced_guid = rvd->vdev_guid;
 		spa_config_exit(spa, SCL_ALL, FTAG);
@@ -6377,7 +6461,8 @@ spa_load_retry(spa_t *spa, spa_load_state_t state)
  * 'state' is SPA_LOAD_RECOVER and one of these loads succeeds the pool
  * will be rewound to that txg. If 'state' is not SPA_LOAD_RECOVER this
  * function will not rewind the pool and will return the same error as
- * spa_load().
+ * spa_load(), or ECANCELED if the load only probed the requested txg
+ * instead of bringing the pool up.
  */
 static int
 spa_load_best(spa_t *spa, spa_load_state_t state, uint64_t max_request,
@@ -6399,8 +6484,25 @@ spa_load_best(spa_t *spa, spa_load_state_t state, uint64_t max_request,
 	}
 
 	load_error = rewind_error = spa_load(spa, state, SPA_IMPORT_EXISTING);
-	if (load_error == 0)
+	if (load_error == 0) {
+		/*
+		 * A load of an explicitly requested txg may only probe
+		 * whether that txg is usable, finishing without a syncing
+		 * thread.  Such a pool is not functional, so it can not be
+		 * handed to the caller no matter how well it loaded.  Report
+		 * the probed txg the same way an actual rewind would.
+		 */
+		if (spa_writeable(spa) && !spa->spa_sync_on) {
+			loadinfo = fnvlist_alloc();
+			fnvlist_add_nvlist(loadinfo, ZPOOL_CONFIG_REWIND_INFO,
+			    spa->spa_load_info);
+			fnvlist_free(spa->spa_load_info);
+			spa->spa_load_info = loadinfo;
+			spa_import_progress_remove(spa_guid(spa));
+			return (SET_ERROR(ECANCELED));
+		}
 		return (0);
+	}
 
 	/* Do not attempt to load uberblocks from previous txgs when: */
 	switch (load_error) {
@@ -10821,6 +10923,59 @@ spa_sync_iterate_to_convergence(spa_t *spa, dmu_tx_t *tx)
 }
 
 /*
+ * Select up to SPA_SYNC_MIN_VDEVS top-level vdevs to write the uberblock to.
+ * First take the ones written during this txg, so that the idle ones may stay
+ * asleep.  If there are not enough, top up from special and dedup vdevs, which
+ * are expected to have no seek penalty.  Pools having none of those keep the
+ * old behavior of topping up from any vdev.
+ */
+static int
+spa_select_uberblock_vdevs(spa_t *spa, vdev_t **svd, uint64_t txg)
+{
+	vdev_t *rvd = spa->spa_root_vdev;
+	uint64_t children = rvd->vdev_children;
+	uint64_t c0 = random_in_range(children);
+	boolean_t tiered = spa_has_special(spa) || spa_has_dedup(spa);
+	int svdcount = 0;
+
+	for (int pass = 0; pass < 3; pass++) {
+		if (pass == 2 && svdcount > 0 && tiered)
+			break;
+
+		for (uint64_t c = 0; c < children &&
+		    svdcount < SPA_SYNC_MIN_VDEVS; c++) {
+			vdev_t *vd = rvd->vdev_child[(c0 + c) % children];
+			boolean_t dup = B_FALSE;
+
+			if (vd->vdev_ms_array == 0 || vd->vdev_islog ||
+			    !vdev_is_concrete(vd))
+				continue;
+
+			if (pass == 0 && !txg_list_member(
+			    &spa->spa_vdev_txg_list, vd, TXG_CLEAN(txg)))
+				continue;
+
+			if (pass == 1) {
+				metaslab_class_t *mc = vd->vdev_mg != NULL ?
+				    vd->vdev_mg->mg_class : NULL;
+				if (mc != spa_special_class(spa) &&
+				    mc != spa_dedup_class(spa))
+					continue;
+			}
+
+			for (int i = 0; i < svdcount; i++)
+				dup |= (svd[i] == vd);
+			if (dup)
+				continue;
+
+			svd[svdcount++] = vd;
+		}
+	}
+
+	return (svdcount);
+}
+
+/*
  * Rewrite the vdev configuration (which includes the uberblock) to
  * commit the transaction group.
  *
@@ -10846,30 +11001,12 @@ spa_sync_rewrite_vdev_config(spa_t *spa, dmu_tx_t *tx)
 
 		if (list_is_empty(&spa->spa_config_dirty_list)) {
 			vdev_t *svd[SPA_SYNC_MIN_VDEVS] = { NULL };
-			int svdcount = 0;
-			int children = rvd->vdev_children;
-			int c0 = random_in_range(children);
+			int svdcount = spa_select_uberblock_vdevs(spa, svd,
+			    txg);
 
-			for (int c = 0; c < children; c++) {
-				vdev_t *vd =
-				    rvd->vdev_child[(c0 + c) % children];
-
-				/* Stop when revisiting the first vdev */
-				if (c > 0 && svd[0] == vd)
-					break;
-
-				if (vd->vdev_ms_array == 0 ||
-				    vd->vdev_islog ||
-				    !vdev_is_concrete(vd))
-					continue;
-
-				svd[svdcount++] = vd;
-				if (svdcount == SPA_SYNC_MIN_VDEVS)
-					break;
-			}
-			error = vdev_config_sync(svd, svdcount, txg);
+			error = vdev_config_sync(spa, svd, svdcount, txg);
 		} else {
-			error = vdev_config_sync(rvd->vdev_child,
+			error = vdev_config_sync(spa, rvd->vdev_child,
 			    rvd->vdev_children, txg);
 		}
 
