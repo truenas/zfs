@@ -498,6 +498,61 @@ const struct inode_operations zpl_ops_snapdir = {
 	.mkdir		= zpl_snapdir_mkdir,
 };
 
+/*
+ * Get unmounted '.zfs/snapshot/<name>' directory attributes.
+ */
+static int
+#ifdef HAVE_IDMAP_IOPS_GETATTR
+zpl_snapdirs_getattr_impl(struct mnt_idmap *user_ns,
+    const struct path *path, struct kstat *stat, u32 request_mask,
+    unsigned int query_flags)
+#elif defined(HAVE_USERNS_IOPS_GETATTR)
+zpl_snapdirs_getattr_impl(struct user_namespace *user_ns,
+    const struct path *path, struct kstat *stat, u32 request_mask,
+    unsigned int query_flags)
+#else
+zpl_snapdirs_getattr_impl(const struct path *path, struct kstat *stat,
+    u32 request_mask, unsigned int query_flags)
+#endif
+{
+	(void) query_flags;
+	struct inode *ip = path->dentry->d_inode;
+	znode_t *zp __maybe_unused = ITOZ(ip);
+
+#if (defined(HAVE_USERNS_IOPS_GETATTR) || defined(HAVE_IDMAP_IOPS_GETATTR))
+#ifdef HAVE_GENERIC_FILLATTR_USERNS
+	generic_fillattr(user_ns, ip, stat);
+#elif defined(HAVE_GENERIC_FILLATTR_IDMAP)
+	generic_fillattr(user_ns, ip, stat);
+#elif defined(HAVE_GENERIC_FILLATTR_IDMAP_REQMASK)
+	generic_fillattr(user_ns, request_mask, ip, stat);
+#else
+	(void) user_ns;
+#endif
+#else
+	generic_fillattr(ip, stat);
+#endif
+
+#ifdef STATX_BTIME
+	if ((request_mask & STATX_BTIME) && zp->z_btime.tv_sec != 0) {
+		stat->btime = zp->z_btime;
+		stat->result_mask |= STATX_BTIME;
+	}
+#endif
+
+	return (0);
+}
+ZPL_GETATTR_WRAPPER(zpl_snapdirs_getattr);
+
+/*
+ * The '.zfs/snapshot/<name>' directory inode operations, used until the
+ * snapshot is mounted over it.
+ */
+const struct inode_operations zpl_ops_snapdirs = {
+	.lookup		= simple_lookup,
+	.getattr	= zpl_snapdirs_getattr,
+};
+
 static struct dentry *
 zpl_shares_lookup(struct inode *dip, struct dentry *dentry,
     unsigned int flags)
