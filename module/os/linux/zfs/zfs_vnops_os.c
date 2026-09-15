@@ -1774,6 +1774,13 @@ zfs_getattr_fast(zidmap_t *user_ns, struct inode *ip, struct kstat *sp)
 	uint32_t blksize;
 	u_longlong_t nblocks;
 	int error;
+#ifdef STATX_BTIME
+#ifdef HAVE_GENERIC_FILLATTR_IDMAP_REQMASK
+	boolean_t want_btime = (request_mask & STATX_BTIME) != 0;
+#else
+	boolean_t want_btime = B_TRUE;
+#endif
+#endif
 
 	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
 		return (error);
@@ -1805,14 +1812,31 @@ zfs_getattr_fast(zidmap_t *user_ns, struct inode *ip, struct kstat *sp)
 
 	mutex_exit(&zp->z_lock);
 
+#ifdef STATX_BTIME
+	if (want_btime) {
+		sp->btime = zp->z_btime;
+		sp->result_mask |= STATX_BTIME;
+	}
+#endif
+
 	/*
 	 * Required to prevent NFS client from detecting different inode
 	 * numbers of snapshot root dentry before and after snapshot mount.
+	 * Likewise report the snapshot creation time as the birth time,
+	 * matching the unmounted '.zfs/snapshot/<name>' directory.
 	 */
 	if (zfsvfs->z_issnap) {
-		if (ip->i_sb->s_root->d_inode == ip)
+		if (ip->i_sb->s_root->d_inode == ip) {
 			sp->ino = ZFSCTL_INO_SNAPDIRS -
 			    dmu_objset_id(zfsvfs->z_os);
+#ifdef STATX_BTIME
+			if (want_btime) {
+				sp->btime.tv_sec = dsl_get_creation(
+				    dmu_objset_ds(zfsvfs->z_os));
+				sp->btime.tv_nsec = 0;
+			}
+#endif
+		}
 	}
 
 	zfs_exit(zfsvfs, FTAG);

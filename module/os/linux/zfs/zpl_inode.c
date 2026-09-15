@@ -499,13 +499,6 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 	error = -zfs_getattr_fast(kcred->user_ns, ip, stat);
 #endif
 
-#ifdef STATX_BTIME
-	if (request_mask & STATX_BTIME) {
-		stat->btime = zp->z_btime;
-		stat->result_mask |= STATX_BTIME;
-	}
-#endif
-
 #ifdef STATX_CHANGE_COOKIE
 	if (request_mask & STATX_CHANGE_COOKIE) {
 		/*
