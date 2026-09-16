@@ -219,6 +219,10 @@ post =
 tests = ['simd_supported']
 tags = ['functional', 'simd']
 
+[tests/functional/snapdir:Linux]
+tests = ['snapdir_stat_btime']
+tags = ['functional', 'snapdir']
+
 [tests/functional/snapshot:Linux]
 tests = ['snapshot_015_pos', 'snapshot_016_pos']
 tags = ['functional', 'snapshot']
