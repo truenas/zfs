@@ -42,6 +42,7 @@
 #include <sys/dsl_synctask.h>
 #include <sys/mmp.h>
 #include <sys/aggsum.h>
+#include <sys/wmsum.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -117,13 +118,16 @@ typedef struct dsl_pool {
 	kcondvar_t dp_spaceavail_cv;
 	uint64_t dp_dirty_pertxg[TXG_SIZE];
 	uint64_t dp_dirty_total;
+	uint64_t dp_sync_reserve_pertxg[TXG_SIZE];
+	uint64_t dp_sync_reserve_total;
 	uint64_t dp_long_free_dirty_pertxg[TXG_SIZE];
-	uint64_t dp_mos_used_delta;
-	uint64_t dp_mos_compressed_delta;
-	uint64_t dp_mos_uncompressed_delta;
 
 	aggsum_t dp_wrlog_pertxg[TXG_SIZE];
 	aggsum_t dp_wrlog_total;
+
+	wmsum_t dp_mos_used_delta;
+	wmsum_t dp_mos_compressed_delta;
+	wmsum_t dp_mos_uncompressed_delta;
 
 	/*
 	 * Time of most recently scheduled (furthest in the future)
@@ -168,7 +172,10 @@ uint64_t dsl_pool_deferred_space(dsl_pool_t *dp);
 void dsl_pool_wrlog_count(dsl_pool_t *dp, int64_t size, uint64_t txg);
 boolean_t dsl_pool_need_wrlog_delay(dsl_pool_t *dp);
 void dsl_pool_dirty_space(dsl_pool_t *dp, int64_t space, dmu_tx_t *tx);
+void dsl_pool_dirty_mos_space(dsl_pool_t *dp, int64_t space, dmu_tx_t *tx);
 void dsl_pool_undirty_space(dsl_pool_t *dp, int64_t space, uint64_t txg);
+void dsl_pool_sync_reserve(dsl_pool_t *dp, uint64_t space, dmu_tx_t *tx);
+void dsl_pool_sync_unreserve(dsl_pool_t *dp, uint64_t space, uint64_t txg);
 void dsl_free(dsl_pool_t *dp, uint64_t txg, const blkptr_t *bpp);
 void dsl_free_sync(zio_t *pio, dsl_pool_t *dp, uint64_t txg,
     const blkptr_t *bpp);
