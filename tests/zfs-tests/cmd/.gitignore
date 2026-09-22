@@ -40,6 +40,7 @@
 /rm_lnkcnt_zero_file
 /send_doall
 /statx
+/statfs_nomount
 /stride_dd
 /threadsappend
 /user_ns_exec
@@ -59,4 +60,5 @@
 /sha2_test
 /idmap_util
 /statx
+/statfs_nomount
 /setlease
