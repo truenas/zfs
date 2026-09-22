@@ -2150,6 +2150,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/snapdir/cleanup.ksh \
 	functional/snapdir/setup.ksh \
 	functional/snapdir/snapdir_stat_btime.ksh \
+	functional/snapdir/snapdir_statfs_fsid.ksh \
 	functional/snapshot/cleanup.ksh \
 	functional/snapshot/clone_001_pos.ksh \
 	functional/snapshot/rollback_001_pos.ksh \
