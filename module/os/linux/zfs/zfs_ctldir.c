@@ -500,6 +500,33 @@ zfsctl_is_snapdir(struct inode *ip)
 }
 
 /*
+ * fsid of the snapshot behind a '.zfs/snapshot/<name>' entry, without
+ * mounting it: the same in-core ds_fsid_guid its superblock reports once
+ * mounted.
+ */
+int
+zfsctl_snapdir_fsid(struct inode *ip, uint64_t *fsidp)
+{
+	zfsvfs_t *zfsvfs = ITOZSB(ip);
+	dsl_pool_t *dp = dmu_objset_pool(zfsvfs->z_os);
+	dsl_dataset_t *ds;
+	int error;
+
+	ASSERT(zfsctl_is_snapdir(ip));
+
+	dsl_pool_config_enter(dp, FTAG);
+	error = dsl_dataset_hold_obj(dp, ZFSCTL_INO_SNAPDIRS - ip->i_ino,
+	    FTAG, &ds);
+	if (error == 0) {
+		*fsidp = dsl_dataset_fsid_guid(ds);
+		dsl_dataset_rele(ds, FTAG);
+	}
+	dsl_pool_config_exit(dp, FTAG);
+
+	return (error);
+}
+
+/*
  * Allocate a new inode with the passed id and ops.
  */
 static struct inode *
