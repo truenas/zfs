@@ -102,6 +102,9 @@ groupmember(gid_t gid, const cred_t *cr)
 	struct group_info *gi;
 	int rc;
 
+	if (gid_eq(cr->fsgid, SGID_TO_KGID(gid)))
+		return (1);
+
 	gi = cr->group_info;
 	rc = cr_groups_search(gi, SGID_TO_KGID(gid));
 
