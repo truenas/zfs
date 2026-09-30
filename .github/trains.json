@@ -34,6 +34,12 @@
       "branch": "stable/26",
       "kernel_repo": "truenas/linux",
       "kernel_tag": "26-nightly"
+    },
+    {
+      "train": "27",
+      "branch": "stable/27",
+      "kernel_repo": "truenas/linux",
+      "kernel_tag": "27-nightly"
     }
   ]
 }

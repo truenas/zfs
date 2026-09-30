@@ -20,6 +20,7 @@ on:
     branches:
       - truenas/zfs-2.4-release
       - stable/26
+      - stable/27
   pull_request:
   workflow_dispatch:
     inputs:
