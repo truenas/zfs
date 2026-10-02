@@ -2089,6 +2089,7 @@ nobase_dist_datadir_zfs_tests_tests_SCRIPTS += \
 	functional/snapshot/rollback_002_pos.ksh \
 	functional/snapshot/rollback_003_pos.ksh \
 	functional/snapshot/setup.ksh \
+	functional/snapshot/snapdir_statfs_fsid.ksh \
 	functional/snapshot/snapshot_001_pos.ksh \
 	functional/snapshot/snapshot_002_pos.ksh \
 	functional/snapshot/snapshot_003_pos.ksh \

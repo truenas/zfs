@@ -227,7 +227,7 @@ tests = ['simd_supported']
 tags = ['functional', 'simd']
 
 [tests/functional/snapshot:Linux]
-tests = ['snapshot_015_pos', 'snapshot_016_pos']
+tests = ['snapshot_015_pos', 'snapshot_016_pos', 'snapdir_statfs_fsid']
 tags = ['functional', 'snapshot']
 
 [tests/functional/syncfs:Linux]

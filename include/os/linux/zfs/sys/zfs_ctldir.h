@@ -58,6 +58,7 @@ extern void zfsctl_init(void);
 extern void zfsctl_fini(void);
 extern boolean_t zfsctl_is_node(struct inode *ip);
 extern boolean_t zfsctl_is_snapdir(struct inode *ip);
+extern int zfsctl_snapdir_fsid(struct inode *ip, uint64_t *fsidp);
 extern int zfsctl_fid(struct inode *ip, fid_t *fidp);
 
 /* zfsctl '.zfs' functions */
