@@ -1589,8 +1589,10 @@ zpl_permission(struct inode *ip, int mask)
 
 	zfsvfs = ZTOZSB(ITOZ(ip));
 
-	if ((ret = -zfs_enter_verify_zp(zfsvfs, ITOZ(ip), FTAG)) != 0)
+	if ((ret = -zfs_enter_verify_zp(zfsvfs, ITOZ(ip), FTAG)) != 0) {
+		crfree(cr);
 		return (ret);
+	}
 
 #if defined(HAVE_IOPS_PERMISSION_USERNS)
 	ret = -zfs_zaccess(ITOZ(ip), to_check, V_ACE_MASK, B_FALSE, cr,
@@ -1815,10 +1817,10 @@ __zpl_xattr_nfs41acl_get(struct inode *ip, const char *name,
 		crhold(cr);
 		vsecp.vsa_mask = VSA_ACECNT;
 		ret = -zfs_getsecattr(ITOZ(ip), &vsecp, ATTR_NOACLCHECK, cr);
+		crfree(cr);
 		if (ret) {
 			return (ret);
 		}
-		crfree(cr);
 		ret = ACES_TO_XDRSIZE(vsecp.vsa_aclcnt);
 		return (ret);
 	}
@@ -1876,7 +1878,7 @@ __zpl_xattr_nfs41acl_set(zidmap_t *mnt_ns,
 
 	if (value == NULL && size == 0) {
 		crhold(cr);
-		error = zfs_stripacl(ITOZ(ip), cr);
+		error = -zfs_stripacl(ITOZ(ip), cr);
 		crfree(cr);
 		return (error);
 	}
