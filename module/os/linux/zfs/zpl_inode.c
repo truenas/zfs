@@ -527,6 +527,18 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 	}
 #endif
 
+#ifdef STATX_GEN
+	if (request_mask & STATX_GEN) {
+		/*
+		 * The generation is the txg the object was created in, as in
+		 * ZFS file handles. It tells a reused object number from the
+		 * file that had it before.
+		 */
+		stat->gen = ip->i_generation;
+		stat->result_mask |= STATX_GEN;
+	}
+#endif
+
 #ifdef STATX_DIOALIGN
 	if (request_mask & STATX_DIOALIGN) {
 		uint64_t align;
