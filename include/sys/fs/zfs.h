@@ -1716,6 +1716,28 @@ typedef enum zfs_ioc {
 #define	ZFS_IOC_SETDOSFLAGS	_IOW(0x83, 2, uint64_t)
 
 /*
+ * Setting this xattr on a file sets its atime, mtime and birth time in
+ * one call with the permission checks of utimensat(2). Each nsec field
+ * may be UTIME_NOW or UTIME_OMIT with the meaning they have for
+ * utimensat(2). The attribute is never stored or listed and cannot be
+ * read. It exists so that io_uring based servers can set times through
+ * IORING_OP_FSETXATTR instead of a blocking ioctl. It needs a kernel
+ * that defines ATTR_BTIME_SET.
+ */
+#define	TRUENAS_XATTR_TIMES		"system.truenas_times"
+
+typedef struct truenas_xattr_time {
+	int64_t	zt_sec;
+	int64_t	zt_nsec;
+} truenas_xattr_time_t;
+
+typedef struct truenas_xattr_times {
+	truenas_xattr_time_t	zxt_atime;
+	truenas_xattr_time_t	zxt_mtime;
+	truenas_xattr_time_t	zxt_btime;
+} truenas_xattr_times_t;
+
+/*
  * Additional file level attributes, that are stored
  * in the upper half of z_pflags
  */
