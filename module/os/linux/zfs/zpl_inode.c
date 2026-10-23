@@ -542,8 +542,8 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 #ifdef STATX_ZFSFLAGS
 	if (request_mask & STATX_ZFSFLAGS) {
 		/*
-		 * Lets samba read DOS attributes and skip reading trivial
-		 * ACLs without extra syscalls. ZFS_ACL_TRIVIAL only means
+		 * Makes DOS attributes and whether the ACL is trivial
+		 * available to userspace. ZFS_ACL_TRIVIAL only means
 		 * anything with NFSv4 ACLs (see zpl_permission), so it is
 		 * hidden otherwise. Internal pflags are never exposed.
 		 */
