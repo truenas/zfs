@@ -1925,6 +1925,95 @@ xattr_handler_t zpl_xattr_nfs41acl_handler =
 	.set	= zpl_xattr_nfs41acl_set,
 };
 
+#ifdef ATTR_BTIME_SET
+/*
+ * TRUENAS_XATTR_TIMES sets atime, mtime and birth time in one call. The value
+ * is a truenas_xattr_times_t whose nsec fields follow the utimensat(2) rules
+ * for UTIME_NOW and UTIME_OMIT. The iattr is built exactly as vfs_utimes()
+ * builds it and handed to notify_change(), so the owner, immutable and LSM
+ * checks of utimensat(2) apply unchanged and run as the calling
+ * credentials, which for io_uring is the personality of the request.
+ * vfs_setxattr() already holds the inode lock and has broken any
+ * delegation. Giving a birth time is never a mere touch, so it always
+ * needs the owner. The attribute is never stored or listed and cannot be
+ * read. The raw xattr_handler signature is used because the set wrapper
+ * drops the dentry that notify_change() needs.
+ */
+static int
+__zpl_xattr_times_list(struct inode *ip, char *list, size_t list_size,
+    const char *name, size_t name_len)
+{
+	return (0);
+}
+ZPL_XATTR_LIST_WRAPPER(zpl_xattr_times_list);
+
+static boolean_t
+zpl_xattr_times_nsec_valid(int64_t nsec)
+{
+	return (nsec == UTIME_NOW || nsec == UTIME_OMIT ||
+	    (nsec >= 0 && nsec < NSEC_PER_SEC));
+}
+
+static int
+zpl_xattr_times_set(const struct xattr_handler *handler,
+    struct mnt_idmap *idmap, struct dentry *dentry, struct inode *ip,
+    const char *name, const void *value, size_t size, int flags)
+{
+	const truenas_xattr_times_t *t = value;
+	struct iattr ia = { .ia_valid = ATTR_CTIME | ATTR_ATIME | ATTR_MTIME };
+
+	if (value == NULL || size != sizeof (*t) || flags != 0)
+		return (-EINVAL);
+
+	if (!zpl_xattr_times_nsec_valid(t->zxt_atime.zt_nsec) ||
+	    !zpl_xattr_times_nsec_valid(t->zxt_mtime.zt_nsec) ||
+	    !zpl_xattr_times_nsec_valid(t->zxt_btime.zt_nsec))
+		return (-EINVAL);
+
+	if (t->zxt_atime.zt_nsec == UTIME_NOW &&
+	    t->zxt_mtime.zt_nsec == UTIME_NOW &&
+	    t->zxt_btime.zt_nsec == UTIME_OMIT) {
+		ia.ia_valid |= ATTR_TOUCH;
+		return (notify_change(idmap, dentry, &ia, NULL));
+	}
+
+	if (t->zxt_atime.zt_nsec == UTIME_OMIT) {
+		ia.ia_valid &= ~ATTR_ATIME;
+	} else if (t->zxt_atime.zt_nsec != UTIME_NOW) {
+		ia.ia_atime.tv_sec = t->zxt_atime.zt_sec;
+		ia.ia_atime.tv_nsec = t->zxt_atime.zt_nsec;
+		ia.ia_valid |= ATTR_ATIME_SET;
+	}
+
+	if (t->zxt_mtime.zt_nsec == UTIME_OMIT) {
+		ia.ia_valid &= ~ATTR_MTIME;
+	} else if (t->zxt_mtime.zt_nsec != UTIME_NOW) {
+		ia.ia_mtime.tv_sec = t->zxt_mtime.zt_sec;
+		ia.ia_mtime.tv_nsec = t->zxt_mtime.zt_nsec;
+		ia.ia_valid |= ATTR_MTIME_SET;
+	}
+
+	if (t->zxt_btime.zt_nsec == UTIME_NOW) {
+		ia.ia_btime = current_time(ip);
+		ia.ia_valid |= ATTR_BTIME_SET;
+	} else if (t->zxt_btime.zt_nsec != UTIME_OMIT) {
+		ia.ia_btime.tv_sec = t->zxt_btime.zt_sec;
+		ia.ia_btime.tv_nsec = t->zxt_btime.zt_nsec;
+		ia.ia_valid |= ATTR_BTIME_SET;
+	}
+
+	ia.ia_valid |= ATTR_TIMES_SET;
+	return (notify_change(idmap, dentry, &ia, NULL));
+}
+
+static xattr_handler_t zpl_xattr_times_handler =
+{
+	.name	= TRUENAS_XATTR_TIMES,
+	.list	= zpl_xattr_times_list,
+	.set	= zpl_xattr_times_set,
+};
+#endif /* ATTR_BTIME_SET */
+
 xattr_handler_t *zpl_xattr_handlers[] = {
 	&zpl_xattr_security_handler,
 	&zpl_xattr_trusted_handler,
@@ -1934,6 +2023,9 @@ xattr_handler_t *zpl_xattr_handlers[] = {
 	&zpl_xattr_acl_default_handler,
 #endif /* CONFIG_FS_POSIX_ACL */
 	&zpl_xattr_nfs41acl_handler,
+#ifdef ATTR_BTIME_SET
+	&zpl_xattr_times_handler,
+#endif
 	NULL
 };
 
@@ -1965,6 +2057,12 @@ zpl_xattr_handler(const char *name)
 	if (strncmp(name, NFS41ACL_XATTR,
 	    sizeof (NFS41ACL_XATTR)) == 0)
 		return (&zpl_xattr_nfs41acl_handler);
+
+#ifdef ATTR_BTIME_SET
+	if (strncmp(name, TRUENAS_XATTR_TIMES,
+	    sizeof (TRUENAS_XATTR_TIMES)) == 0)
+		return (&zpl_xattr_times_handler);
+#endif
 
 	return (NULL);
 }
