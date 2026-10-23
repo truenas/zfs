@@ -591,6 +591,36 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 }
 ZPL_GETATTR_WRAPPER(zpl_getattr);
 
+#ifdef ATTR_BTIME_SET
+/*
+ * Carry an explicit birth time from the TrueNAS kernel's iattr into the
+ * xvattr that zfs_setattr() understands. A file cannot have been modified
+ * before it was born, so as FreeBSD setutimes() does, an explicit mtime
+ * older than the birth time lowers the birth time unless the caller set
+ * the birth time itself.
+ */
+static void
+zpl_setattr_btime(struct inode *ip, struct iattr *ia, xvattr_t *xva)
+{
+	xoptattr_t *xoap;
+
+	if ((ia->ia_valid & ATTR_MTIME_SET) &&
+	    !(ia->ia_valid & ATTR_BTIME_SET) &&
+	    timespec64_compare(&ia->ia_mtime, &ITOZ(ip)->z_btime) < 0) {
+		ia->ia_btime = ia->ia_mtime;
+		ia->ia_valid |= ATTR_BTIME_SET;
+	}
+
+	if (!(ia->ia_valid & ATTR_BTIME_SET))
+		return;
+
+	xva_init(xva);
+	xoap = xva_getxoptattr(xva);
+	XVA_SET_REQ(xva, XAT_CREATETIME);
+	xoap->xoa_createtime = ia->ia_btime;
+}
+#endif /* ATTR_BTIME_SET */
+
 static int
 #ifdef HAVE_USERNS_IOPS_SETATTR
 zpl_setattr(struct user_namespace *user_ns, struct dentry *dentry,
@@ -604,6 +634,7 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 {
 	struct inode *ip = dentry->d_inode;
 	cred_t *cr = CRED();
+	xvattr_t *xva;
 	vattr_t *vap;
 	int error;
 	fstrans_cookie_t cookie;
@@ -619,8 +650,12 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 		return (error);
 
 	crhold(cr);
-	vap = kmem_zalloc(sizeof (vattr_t), KM_SLEEP);
-	vap->va_mask = ia->ia_valid & ATTR_IATTR_MASK;
+	xva = kmem_zalloc(sizeof (xvattr_t), KM_SLEEP);
+	vap = &xva->xva_vattr;
+#ifdef ATTR_BTIME_SET
+	zpl_setattr_btime(ip, ia, xva);
+#endif
+	vap->va_mask |= ia->ia_valid & ATTR_IATTR_MASK;
 	vap->va_mode = ia->ia_mode;
 	if (ia->ia_valid & ATTR_UID)
 #ifdef HAVE_IATTR_VFSID
@@ -657,7 +692,7 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 		error = zpl_chmod_acl(ip);
 
 	spl_fstrans_unmark(cookie);
-	kmem_free(vap, sizeof (vattr_t));
+	kmem_free(xva, sizeof (xvattr_t));
 	crfree(cr);
 	ASSERT3S(error, <=, 0);
 
