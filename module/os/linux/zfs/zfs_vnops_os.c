@@ -2129,14 +2129,12 @@ zfs_setattr(znode_t *zp, vattr_t *vap, int flags, cred_t *cr, zidmap_t *mnt_ns)
 		}
 	}
 
-#ifdef ATTR_BTIME_SET
 	if (xoap != NULL && (mask & ATTR_XVATTR) &&
 	    XVA_ISSET_REQ(xvap, XAT_CREATETIME) &&
 	    TIMESPEC_OVERFLOW(&xoap->xoa_createtime)) {
 		err = SET_ERROR(EOVERFLOW);
 		goto out3;
 	}
-#endif
 
 top:
 	attrzp = NULL;
