@@ -542,14 +542,17 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 #ifdef STATX_ZFSFLAGS
 	if (request_mask & STATX_ZFSFLAGS) {
 		/*
-		 * Makes DOS attributes and whether the ACL is trivial
-		 * available to userspace. ZFS_ACL_TRIVIAL only means
-		 * anything with NFSv4 ACLs (see zpl_permission), so it is
-		 * hidden otherwise. Internal pflags are never exposed.
+		 * Makes DOS attributes, whether the ACL is trivial and the
+		 * ACL-wide flags available to userspace. ZFS_ACL_TRIVIAL only
+		 * means anything with NFSv4 ACLs (see zpl_permission), and the
+		 * ACL-wide flags are those zfs_getsecattr() gives an NFSv4
+		 * ACL, so all four are hidden otherwise. Internal pflags are
+		 * never exposed.
 		 */
 		uint64_t mask = ZFS_DOS_FL_USER_VISIBLE;
 		if (ZTOZSB(zp)->z_acl_type == ZFS_ACLTYPE_NFSV4)
-			mask |= ZFS_ACL_TRIVIAL;
+			mask |= ZFS_ACL_TRIVIAL | ZFS_ACL_PROTECTED |
+			    ZFS_ACL_DEFAULTED | ZFS_ACL_AUTO_INHERIT;
 		stat->zfsflags = zp->z_pflags & mask;
 		stat->result_mask |= STATX_ZFSFLAGS;
 	}
