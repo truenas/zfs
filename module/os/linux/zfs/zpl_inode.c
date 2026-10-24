@@ -591,35 +591,70 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 }
 ZPL_GETATTR_WRAPPER(zpl_getattr);
 
-#ifdef ATTR_BTIME_SET
+#ifdef HAVE_XATTR_SET_IDMAP
+uint_t zpl_setattr_extra_key;
+
 /*
- * Carry an explicit birth time from the TrueNAS kernel's iattr into the
- * xvattr that zfs_setattr() understands. A file cannot have been modified
- * before it was born, so as FreeBSD setutimes() does, an explicit mtime
- * older than the birth time lowers the birth time unless the caller set
- * the birth time itself.
+ * Fold what TRUENAS_XATTR_SETATTR carries beside the iattr, the birth time
+ * and the DOS attributes, into the xvattr that zfs_setattr() understands,
+ * so that all of it is written in one transaction. A file cannot have been
+ * modified before it was born, so as FreeBSD setutimes() does, an explicit
+ * mtime older than the birth time lowers the birth time unless the caller
+ * set the birth time itself.
  */
 static void
-zpl_setattr_btime(struct inode *ip, struct iattr *ia, xvattr_t *xva)
+zpl_setattr_xvattr(struct inode *ip, struct iattr *ia, xvattr_t *xva)
 {
+	zpl_setattr_extra_t *extra = tsd_get(zpl_setattr_extra_key);
+	const inode_timespec_t *btime = NULL;
+	uint64_t dos_set = 0, dos_ask = 0;
 	xoptattr_t *xoap;
 
-	if ((ia->ia_valid & ATTR_MTIME_SET) &&
-	    !(ia->ia_valid & ATTR_BTIME_SET) &&
-	    timespec64_compare(&ia->ia_mtime, &ITOZ(ip)->z_btime) < 0) {
-		ia->ia_btime = ia->ia_mtime;
-		ia->ia_valid |= ATTR_BTIME_SET;
+	if (extra != NULL && extra->zse_ip == ip) {
+		if (extra->zse_valid & TRUENAS_SETATTR_BTIME)
+			btime = &extra->zse_btime;
+		if (extra->zse_valid & TRUENAS_SETATTR_DOSFLAGS) {
+			dos_set = extra->zse_dos_set;
+			dos_ask = dos_set | extra->zse_dos_clear;
+		}
 	}
 
-	if (!(ia->ia_valid & ATTR_BTIME_SET))
+	if (btime == NULL && (ia->ia_valid & ATTR_MTIME_SET) &&
+	    timespec64_compare(&ia->ia_mtime, &ITOZ(ip)->z_btime) < 0)
+		btime = &ia->ia_mtime;
+
+	if (btime == NULL && dos_ask == 0)
 		return;
 
 	xva_init(xva);
 	xoap = xva_getxoptattr(xva);
-	XVA_SET_REQ(xva, XAT_CREATETIME);
-	xoap->xoa_createtime = ia->ia_btime;
+	if (btime != NULL) {
+		XVA_SET_REQ(xva, XAT_CREATETIME);
+		xoap->xoa_createtime = *btime;
+	}
+
+#define	DOS_ASK(zflag, xflag, xfield)	do {			\
+	if (dos_ask & (zflag)) {					\
+		XVA_SET_REQ(xva, (xflag));				\
+		(xfield) = ((dos_set & (zflag)) != 0);			\
+	}								\
+} while (0)
+
+	DOS_ASK(ZFS_IMMUTABLE, XAT_IMMUTABLE, xoap->xoa_immutable);
+	DOS_ASK(ZFS_APPENDONLY, XAT_APPENDONLY, xoap->xoa_appendonly);
+	DOS_ASK(ZFS_NODUMP, XAT_NODUMP, xoap->xoa_nodump);
+	DOS_ASK(ZFS_READONLY, XAT_READONLY, xoap->xoa_readonly);
+	DOS_ASK(ZFS_HIDDEN, XAT_HIDDEN, xoap->xoa_hidden);
+	DOS_ASK(ZFS_SYSTEM, XAT_SYSTEM, xoap->xoa_system);
+	DOS_ASK(ZFS_ARCHIVE, XAT_ARCHIVE, xoap->xoa_archive);
+	DOS_ASK(ZFS_NOUNLINK, XAT_NOUNLINK, xoap->xoa_nounlink);
+	DOS_ASK(ZFS_REPARSE, XAT_REPARSE, xoap->xoa_reparse);
+	DOS_ASK(ZFS_OFFLINE, XAT_OFFLINE, xoap->xoa_offline);
+	DOS_ASK(ZFS_SPARSE, XAT_SPARSE, xoap->xoa_sparse);
+
+#undef	DOS_ASK
 }
-#endif /* ATTR_BTIME_SET */
+#endif /* HAVE_XATTR_SET_IDMAP */
 
 static int
 #ifdef HAVE_USERNS_IOPS_SETATTR
@@ -652,8 +687,8 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 	crhold(cr);
 	xva = kmem_zalloc(sizeof (xvattr_t), KM_SLEEP);
 	vap = &xva->xva_vattr;
-#ifdef ATTR_BTIME_SET
-	zpl_setattr_btime(ip, ia, xva);
+#ifdef HAVE_XATTR_SET_IDMAP
+	zpl_setattr_xvattr(ip, ia, xva);
 #endif
 	vap->va_mask |= ia->ia_valid & ATTR_IATTR_MASK;
 	vap->va_mode = ia->ia_mode;

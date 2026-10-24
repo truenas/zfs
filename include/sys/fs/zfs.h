@@ -1716,26 +1716,63 @@ typedef enum zfs_ioc {
 #define	ZFS_IOC_SETDOSFLAGS	_IOW(0x83, 2, uint64_t)
 
 /*
- * Setting this xattr on a file sets its atime, mtime and birth time in
- * one call with the permission checks of utimensat(2). Each nsec field
- * may be UTIME_NOW or UTIME_OMIT with the meaning they have for
- * utimensat(2). The attribute is never stored or listed and cannot be
- * read. It exists so that io_uring based servers can set times through
- * IORING_OP_FSETXATTR instead of a blocking ioctl. It needs a kernel
- * that defines ATTR_BTIME_SET.
+ * Setting this xattr on a file sets any of its mode, owner, group, atime,
+ * mtime, birth time and DOS attributes in one call and one transaction.
+ * The value is a truenas_xattr_setattr_t whose zsa_valid names the fields
+ * that apply. The checks are those of chmod(2), chown(2) and utimensat(2),
+ * run as the caller, and a birth time needs the owner. Each nsec field may
+ * be UTIME_NOW or UTIME_OMIT with the meaning they have for utimensat(2).
+ * The DOS attributes are those of ZFS_IOC_SETDOSFLAGS, given as bits to set
+ * and bits to clear so that no other bit is read and written back.
+ * readonly, hidden, system, archive, offline and sparse need write
+ * attributes from the ACL or the owner. The others need the owner, and
+ * immutable and appendonly also need CAP_LINUX_IMMUTABLE. The VFS refuses
+ * any xattr write to an immutable or append only file, so clearing those
+ * two takes the ioctl. zsa_acl_len bytes after the header are kept for an
+ * ACL and refused for now. The attribute is never stored or listed and
+ * cannot be read. It exists so that io_uring based servers can set these
+ * through IORING_OP_FSETXATTR instead of blocking calls and an ioctl. It
+ * needs Linux 6.3 or later.
  */
-#define	TRUENAS_XATTR_TIMES		"system.truenas_times"
+#define	TRUENAS_XATTR_SETATTR		"system.truenas_setattr"
+#define	TRUENAS_XATTR_SETATTR_VERSION	1
+
+/*
+ * Bits of zsa_valid, each naming the fields it gives. MODE gives zsa_mode
+ * and zsa_mode_mask, DOSFLAGS gives zsa_dos_set and zsa_dos_clear, and
+ * ACL gives zsa_acl_len bytes after the header.
+ */
+#define	TRUENAS_SETATTR_MODE		(1ULL << 0)
+#define	TRUENAS_SETATTR_UID		(1ULL << 1)
+#define	TRUENAS_SETATTR_GID		(1ULL << 2)
+#define	TRUENAS_SETATTR_ATIME		(1ULL << 3)
+#define	TRUENAS_SETATTR_MTIME		(1ULL << 4)
+#define	TRUENAS_SETATTR_BTIME		(1ULL << 5)
+#define	TRUENAS_SETATTR_DOSFLAGS	(1ULL << 6)
+#define	TRUENAS_SETATTR_ACL		(1ULL << 7)
 
 typedef struct truenas_xattr_time {
 	int64_t	zt_sec;
 	int64_t	zt_nsec;
 } truenas_xattr_time_t;
 
-typedef struct truenas_xattr_times {
-	truenas_xattr_time_t	zxt_atime;
-	truenas_xattr_time_t	zxt_mtime;
-	truenas_xattr_time_t	zxt_btime;
-} truenas_xattr_times_t;
+typedef struct truenas_xattr_setattr {
+	uint32_t	zsa_version;	/* TRUENAS_XATTR_SETATTR_VERSION */
+	uint32_t	zsa_hdrsize;	/* the size of this header */
+	uint64_t	zsa_valid;	/* TRUENAS_SETATTR_* */
+	uint32_t	zsa_mode;	/* bits within 07777 */
+	uint32_t	zsa_mode_mask;	/* bits of the mode to replace */
+	uint32_t	zsa_uid;
+	uint32_t	zsa_gid;
+	truenas_xattr_time_t zsa_atime;
+	truenas_xattr_time_t zsa_mtime;
+	truenas_xattr_time_t zsa_btime;
+	uint64_t	zsa_dos_set;	/* ZFS_DOS_FL_USER_VISIBLE bits */
+	uint64_t	zsa_dos_clear;
+	uint32_t	zsa_acl_len;	/* bytes of ACL after the header */
+	uint32_t	zsa_flags;	/* none yet, 0 */
+	uint64_t	zsa_reserved[5]; /* 0 */
+} truenas_xattr_setattr_t;
 
 /*
  * Additional file level attributes, that are stored

@@ -2105,6 +2105,9 @@ zfs_init(void)
 {
 	zfsctl_init();
 	zfs_znode_init();
+#ifdef HAVE_XATTR_SET_IDMAP
+	tsd_create(&zpl_setattr_extra_key, NULL);
+#endif
 	dmu_objset_register_type(DMU_OST_ZFS, zpl_get_file_info);
 	register_filesystem(&zpl_fs_type);
 }
@@ -2118,6 +2121,9 @@ zfs_fini(void)
 	taskq_wait(system_delay_taskq);
 	taskq_wait(system_taskq);
 	unregister_filesystem(&zpl_fs_type);
+#ifdef HAVE_XATTR_SET_IDMAP
+	tsd_destroy(&zpl_setattr_extra_key);
+#endif
 	zfs_znode_fini();
 	zfsctl_fini();
 }
