@@ -1930,15 +1930,18 @@ xattr_handler_t zpl_xattr_nfs41acl_handler =
  * TRUENAS_XATTR_SETATTR sets the mode, owner, group, times and DOS
  * attributes of a file in one call and one transaction. The iattr is built
  * as chmod_common(), chown_common() and vfs_utimes() build it and handed to
- * notify_change(), so the checks of the VFS and the LSM apply unchanged and
- * run as the calling credentials, which for io_uring is the personality of
- * the request. What an iattr cannot hold, the birth time and the DOS
- * attributes, rides to zpl_setattr() on thread specific data. On Linux
- * zfs_setattr() leaves every check to the VFS, which knows nothing of the
- * DOS attributes, so they are checked here. vfs_setxattr() already holds
- * the inode lock and has broken any delegation. The attribute is never
- * stored or listed and cannot be read. The raw xattr_handler signature is
- * used because the set wrapper drops the dentry that notify_change() needs.
+ * notify_change() with the mount's idmap, so the checks of the VFS and the
+ * LSM inode hooks run as the calling credentials, which for io_uring is the
+ * personality of the request. An xattr handler has no vfsmount, so the LSM
+ * path hooks of chmod(2) and chown(2), security_path_chmod() and
+ * security_path_chown(), do not run. What an iattr cannot hold, the birth
+ * time and the DOS attributes, rides to zpl_setattr() on thread specific
+ * data. On Linux zfs_setattr() leaves every check to the VFS, which knows
+ * nothing of the DOS attributes, so they are checked here. vfs_setxattr()
+ * already holds the inode lock and has broken any delegation. The attribute
+ * is never stored or listed and cannot be read. The raw xattr_handler
+ * signature is used because the set wrapper drops the dentry that
+ * notify_change() needs.
  */
 _Static_assert(sizeof (truenas_xattr_setattr_t) == 144,
 	"truenas_xattr_setattr_t is part of the ABI");
@@ -1980,6 +1983,10 @@ static int
 zpl_xattr_setattr_dos_check(struct mnt_idmap *idmap, struct inode *ip,
     uint64_t dos)
 {
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	int error;
+
 	if ((dos & (ZFS_IMMUTABLE | ZFS_APPENDONLY)) &&
 	    !capable(CAP_LINUX_IMMUTABLE))
 		return (-EPERM);
@@ -1987,14 +1994,19 @@ zpl_xattr_setattr_dos_check(struct mnt_idmap *idmap, struct inode *ip,
 	if (zpl_inode_owner_or_capable(idmap, ip))
 		return (0);
 
-	if ((dos & ~ZPL_SETATTR_DOS_ATTRS) == 0 &&
-	    ITOZSB(ip)->z_acl_type == ZFS_ACLTYPE_NFSV4 &&
-	    !(ITOZ(ip)->z_pflags & ZFS_ACL_TRIVIAL) &&
-	    zfs_access(ITOZ(ip), ACE_WRITE_ATTRIBUTES, V_ACE_MASK,
-	    CRED()) == 0)
-		return (0);
+	if ((dos & ~ZPL_SETATTR_DOS_ATTRS) != 0 ||
+	    zfsvfs->z_acl_type != ZFS_ACLTYPE_NFSV4 ||
+	    (zp->z_pflags & ZFS_ACL_TRIVIAL))
+		return (-EPERM);
 
-	return (-EPERM);
+	/* As in zpl_permission(), the ACL is checked through the idmap. */
+	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		return (-error);
+	error = zfs_zaccess(zp, ACE_WRITE_ATTRIBUTES, V_ACE_MASK, B_FALSE,
+	    CRED(), idmap);
+	zfs_exit(zfsvfs, FTAG);
+
+	return (error ? -EPERM : 0);
 }
 
 static int
