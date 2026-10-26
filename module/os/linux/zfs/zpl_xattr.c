@@ -1942,6 +1942,12 @@ xattr_handler_t zpl_xattr_nfs41acl_handler =
  * is never stored or listed and cannot be read. The raw xattr_handler
  * signature is used because the set wrapper drops the dentry that
  * notify_change() needs.
+ *
+ * The VFS checks nothing for a system.* xattr, and overlayfs forwards one
+ * with the mounter's credentials, so through an overlay any caller could
+ * act as the mounter. The TrueNAS kernel refuses system.truenas_* and
+ * system.nfs4_acl_xdr in fs/overlayfs/xattrs.c for that reason. A new
+ * xattr that acts on the file must keep the system.truenas_ prefix.
  */
 _Static_assert(sizeof (truenas_xattr_setattr_t) == 144,
 	"truenas_xattr_setattr_t is part of the ABI");
@@ -2140,6 +2146,10 @@ zpl_xattr_setattr_set(const struct xattr_handler *handler,
 		extra.zse_dos_clear = sa->zsa_dos_clear;
 		extra.zse_valid |= TRUENAS_SETATTR_DOSFLAGS;
 	}
+
+	/* As utimensat(2) does with UTIME_OMIT alone, change nothing. */
+	if (ia.ia_valid == ATTR_CTIME && extra.zse_valid == 0)
+		return (0);
 
 	if (extra.zse_valid == 0)
 		return (notify_change(idmap, dentry, &ia, NULL));
