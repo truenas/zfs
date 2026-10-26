@@ -1,26 +1,13 @@
 # TrueNAS-only workflow, not present upstream.  Runs the zfs-qemu test
 # sequence on the Debian 13 image rebooted into the TrueNAS production
-# kernel (debian13-tn), alongside the unmodified upstream zfs-qemu
-# workflow which keeps testing the stock Debian kernel.  Comparing the
-# two attributes a failure to the TrueNAS kernel (fails only here) or
-# to the ZFS change itself (fails in both).
+# kernel (debian13-tn) for every pull request.  This is the only ZTS
+# run here; the upstream zfs-qemu workflow, which tests the stock
+# Debian kernel, only runs when dispatched by hand.  Dispatching it on
+# the same ref attributes a failure to the TrueNAS kernel (fails only
+# here) or to the ZFS change itself (fails in both).
 name: zfs-qemu-tn
 
 on:
-  # A push to a branch with an open PR fires both push and
-  # pull_request, and both runs land in the same concurrency group
-  # below, where cancel-in-progress kills whichever started first.  The
-  # two are not interchangeable either: the push run resolves the train
-  # from the head branch, the pull_request run from the base.  Only the
-  # branches paired in .github/trains.json need the push trigger - they
-  # are merge targets, never PR heads - and every other branch is
-  # covered by its pull request.  on: cannot read trains.json, so keep
-  # this list in step with the branch names there.
-  push:
-    branches:
-      - truenas/zfs-2.4-release
-      - stable/26
-      - stable/27
   pull_request:
   workflow_dispatch:
     inputs:
