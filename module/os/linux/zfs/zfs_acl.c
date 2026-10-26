@@ -2065,6 +2065,9 @@ zfs_getacl_impl(znode_t *zp, vsecattr_t *vsecp, boolean_t stripped, cred_t *cr)
 			vsecp->vsa_aclflags |= ACL_IS_DIR;
 	}
 
+	if (stripped)
+		zfs_acl_free(aclp);
+
 	return (0);
 }
 
