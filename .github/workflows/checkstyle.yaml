@@ -1,7 +1,6 @@
 name: checkstyle
 
 on:
-  push:
   pull_request:
 
 concurrency:

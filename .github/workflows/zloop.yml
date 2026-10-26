@@ -1,7 +1,6 @@
 name: zloop
 
 on:
-  push:
   pull_request:
     paths-ignore:
       - 'man/**'
