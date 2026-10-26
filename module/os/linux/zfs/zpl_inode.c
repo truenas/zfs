@@ -542,14 +542,17 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 #ifdef STATX_ZFSFLAGS
 	if (request_mask & STATX_ZFSFLAGS) {
 		/*
-		 * Makes DOS attributes and whether the ACL is trivial
-		 * available to userspace. ZFS_ACL_TRIVIAL only means
-		 * anything with NFSv4 ACLs (see zpl_permission), so it is
-		 * hidden otherwise. Internal pflags are never exposed.
+		 * Makes DOS attributes, whether the ACL is trivial and the
+		 * ACL-wide flags available to userspace. ZFS_ACL_TRIVIAL only
+		 * means anything with NFSv4 ACLs (see zpl_permission), and the
+		 * ACL-wide flags are those zfs_getsecattr() gives an NFSv4
+		 * ACL, so all four are hidden otherwise. Internal pflags are
+		 * never exposed.
 		 */
 		uint64_t mask = ZFS_DOS_FL_USER_VISIBLE;
 		if (ZTOZSB(zp)->z_acl_type == ZFS_ACLTYPE_NFSV4)
-			mask |= ZFS_ACL_TRIVIAL;
+			mask |= ZFS_ACL_TRIVIAL | ZFS_ACL_PROTECTED |
+			    ZFS_ACL_DEFAULTED | ZFS_ACL_AUTO_INHERIT;
 		stat->zfsflags = zp->z_pflags & mask;
 		stat->result_mask |= STATX_ZFSFLAGS;
 	}
@@ -591,6 +594,74 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 }
 ZPL_GETATTR_WRAPPER(zpl_getattr);
 
+#ifdef HAVE_XATTR_SET_IDMAP
+uint_t zpl_setattr_extra_key;
+
+/*
+ * Fold what TRUENAS_XATTR_SETATTR carries beside the iattr, the birth time
+ * and the DOS attributes, into the xvattr that zfs_setattr() understands,
+ * so that all of it is written in one transaction. A file cannot have been
+ * modified before it was born, so as FreeBSD setutimes() does, an explicit
+ * mtime older than the birth time lowers the birth time unless the caller
+ * set the birth time itself. As ZFS_IOC_SETDOSFLAGS does, only the DOS
+ * attributes that would change are asked for, since zfs_setattr() refuses
+ * any request for XAT_REPARSE, even one that changes nothing.
+ */
+static void
+zpl_setattr_xvattr(struct inode *ip, struct iattr *ia, xvattr_t *xva)
+{
+	zpl_setattr_extra_t *extra = tsd_get(zpl_setattr_extra_key);
+	const inode_timespec_t *btime = NULL;
+	uint64_t dos_set = 0, dos_ask = 0;
+	xoptattr_t *xoap;
+
+	if (extra != NULL && extra->zse_ip == ip) {
+		if (extra->zse_valid & TRUENAS_SETATTR_BTIME)
+			btime = &extra->zse_btime;
+		if (extra->zse_valid & TRUENAS_SETATTR_DOSFLAGS) {
+			dos_set = extra->zse_dos_set;
+			dos_ask = (dos_set | extra->zse_dos_clear) &
+			    (dos_set ^ ITOZ(ip)->z_pflags);
+		}
+	}
+
+	if (btime == NULL && (ia->ia_valid & ATTR_MTIME_SET) &&
+	    timespec64_compare(&ia->ia_mtime, &ITOZ(ip)->z_btime) < 0)
+		btime = &ia->ia_mtime;
+
+	if (btime == NULL && dos_ask == 0)
+		return;
+
+	xva_init(xva);
+	xoap = xva_getxoptattr(xva);
+	if (btime != NULL) {
+		XVA_SET_REQ(xva, XAT_CREATETIME);
+		xoap->xoa_createtime = *btime;
+	}
+
+#define	DOS_ASK(zflag, xflag, xfield)	do {			\
+	if (dos_ask & (zflag)) {					\
+		XVA_SET_REQ(xva, (xflag));				\
+		(xfield) = ((dos_set & (zflag)) != 0);			\
+	}								\
+} while (0)
+
+	DOS_ASK(ZFS_IMMUTABLE, XAT_IMMUTABLE, xoap->xoa_immutable);
+	DOS_ASK(ZFS_APPENDONLY, XAT_APPENDONLY, xoap->xoa_appendonly);
+	DOS_ASK(ZFS_NODUMP, XAT_NODUMP, xoap->xoa_nodump);
+	DOS_ASK(ZFS_READONLY, XAT_READONLY, xoap->xoa_readonly);
+	DOS_ASK(ZFS_HIDDEN, XAT_HIDDEN, xoap->xoa_hidden);
+	DOS_ASK(ZFS_SYSTEM, XAT_SYSTEM, xoap->xoa_system);
+	DOS_ASK(ZFS_ARCHIVE, XAT_ARCHIVE, xoap->xoa_archive);
+	DOS_ASK(ZFS_NOUNLINK, XAT_NOUNLINK, xoap->xoa_nounlink);
+	DOS_ASK(ZFS_REPARSE, XAT_REPARSE, xoap->xoa_reparse);
+	DOS_ASK(ZFS_OFFLINE, XAT_OFFLINE, xoap->xoa_offline);
+	DOS_ASK(ZFS_SPARSE, XAT_SPARSE, xoap->xoa_sparse);
+
+#undef	DOS_ASK
+}
+#endif /* HAVE_XATTR_SET_IDMAP */
+
 static int
 #ifdef HAVE_USERNS_IOPS_SETATTR
 zpl_setattr(struct user_namespace *user_ns, struct dentry *dentry,
@@ -604,6 +675,7 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 {
 	struct inode *ip = dentry->d_inode;
 	cred_t *cr = CRED();
+	xvattr_t *xva;
 	vattr_t *vap;
 	int error;
 	fstrans_cookie_t cookie;
@@ -619,8 +691,12 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 		return (error);
 
 	crhold(cr);
-	vap = kmem_zalloc(sizeof (vattr_t), KM_SLEEP);
-	vap->va_mask = ia->ia_valid & ATTR_IATTR_MASK;
+	xva = kmem_zalloc(sizeof (xvattr_t), KM_SLEEP);
+	vap = &xva->xva_vattr;
+#ifdef HAVE_XATTR_SET_IDMAP
+	zpl_setattr_xvattr(ip, ia, xva);
+#endif
+	vap->va_mask |= ia->ia_valid & ATTR_IATTR_MASK;
 	vap->va_mode = ia->ia_mode;
 	if (ia->ia_valid & ATTR_UID)
 #ifdef HAVE_IATTR_VFSID
@@ -657,7 +733,7 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 		error = zpl_chmod_acl(ip);
 
 	spl_fstrans_unmark(cookie);
-	kmem_free(vap, sizeof (vattr_t));
+	kmem_free(xva, sizeof (xvattr_t));
 	crfree(cr);
 	ASSERT3S(error, <=, 0);
 

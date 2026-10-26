@@ -111,6 +111,23 @@ extern int zpl_permission(struct inode *ip, int mask);
 
 extern xattr_handler_t *zpl_xattr_handlers[];
 
+#ifdef HAVE_XATTR_SET_IDMAP
+/*
+ * What TRUENAS_XATTR_SETATTR hands zpl_setattr() beside the iattr, which
+ * has no field for it. It hangs on thread specific data for the one call
+ * of notify_change(), and zpl_setattr() takes it only for zse_ip.
+ */
+typedef struct zpl_setattr_extra {
+	struct inode		*zse_ip;
+	uint64_t		zse_valid;	/* _BTIME and _DOSFLAGS */
+	inode_timespec_t	zse_btime;
+	uint64_t		zse_dos_set;
+	uint64_t		zse_dos_clear;
+} zpl_setattr_extra_t;
+
+extern uint_t zpl_setattr_extra_key;
+#endif
+
 /* zpl_ctldir.c */
 extern const struct file_operations zpl_fops_root;
 extern const struct inode_operations zpl_ops_root;

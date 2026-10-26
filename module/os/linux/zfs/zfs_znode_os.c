@@ -979,6 +979,8 @@ zfs_xvattr_set(znode_t *zp, xvattr_t *xvap, dmu_tx_t *tx)
 		ZFS_TIME_ENCODE(&xoap->xoa_createtime, times);
 		(void) sa_update(zp->z_sa_hdl, SA_ZPL_CRTIME(ZTOZSB(zp)),
 		    &times, sizeof (times), tx);
+		/* statx reports the cached copy, so keep it current. */
+		zp->z_btime = xoap->xoa_createtime;
 		XVA_SET_RTN(xvap, XAT_CREATETIME);
 	}
 	if (XVA_ISSET_REQ(xvap, XAT_READONLY)) {
