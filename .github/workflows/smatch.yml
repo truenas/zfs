@@ -1,7 +1,6 @@
 name: smatch
 
 on:
-  push:
   pull_request:
     paths-ignore:
       - 'man/**'

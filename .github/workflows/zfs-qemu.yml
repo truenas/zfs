@@ -1,7 +1,6 @@
 name: zfs-qemu
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
     inputs:
