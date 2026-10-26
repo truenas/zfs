@@ -603,7 +603,9 @@ uint_t zpl_setattr_extra_key;
  * so that all of it is written in one transaction. A file cannot have been
  * modified before it was born, so as FreeBSD setutimes() does, an explicit
  * mtime older than the birth time lowers the birth time unless the caller
- * set the birth time itself.
+ * set the birth time itself. As ZFS_IOC_SETDOSFLAGS does, only the DOS
+ * attributes that would change are asked for, since zfs_setattr() refuses
+ * any request for XAT_REPARSE, even one that changes nothing.
  */
 static void
 zpl_setattr_xvattr(struct inode *ip, struct iattr *ia, xvattr_t *xva)
@@ -618,7 +620,8 @@ zpl_setattr_xvattr(struct inode *ip, struct iattr *ia, xvattr_t *xva)
 			btime = &extra->zse_btime;
 		if (extra->zse_valid & TRUENAS_SETATTR_DOSFLAGS) {
 			dos_set = extra->zse_dos_set;
-			dos_ask = dos_set | extra->zse_dos_clear;
+			dos_ask = (dos_set | extra->zse_dos_clear) &
+			    (dos_set ^ ITOZ(ip)->z_pflags);
 		}
 	}
 
