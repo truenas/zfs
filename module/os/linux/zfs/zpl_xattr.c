@@ -1925,6 +1925,251 @@ xattr_handler_t zpl_xattr_nfs41acl_handler =
 	.set	= zpl_xattr_nfs41acl_set,
 };
 
+#ifdef HAVE_XATTR_SET_IDMAP
+/*
+ * TRUENAS_XATTR_SETATTR sets the mode, owner, group, times and DOS
+ * attributes of a file in one call and one transaction. The iattr is built
+ * as chmod_common(), chown_common() and vfs_utimes() build it and handed to
+ * notify_change() with the mount's idmap, so the checks of the VFS and the
+ * LSM inode hooks run as the calling credentials, which for io_uring is the
+ * personality of the request. An xattr handler has no vfsmount, so the LSM
+ * path hooks of chmod(2) and chown(2), security_path_chmod() and
+ * security_path_chown(), do not run. What an iattr cannot hold, the birth
+ * time and the DOS attributes, rides to zpl_setattr() on thread specific
+ * data. On Linux zfs_setattr() leaves every check to the VFS, which knows
+ * nothing of the DOS attributes, so they are checked here. vfs_setxattr()
+ * already holds the inode lock and has broken any delegation. The attribute
+ * is never stored or listed and cannot be read. The raw xattr_handler
+ * signature is used because the set wrapper drops the dentry that
+ * notify_change() needs.
+ *
+ * The VFS checks nothing for a system.* xattr, and overlayfs forwards one
+ * with the mounter's credentials, so through an overlay any caller could
+ * act as the mounter. The TrueNAS kernel refuses system.truenas_* and
+ * system.nfs4_acl_xdr in fs/overlayfs/xattrs.c for that reason. A new
+ * xattr that acts on the file must keep the system.truenas_ prefix.
+ */
+_Static_assert(sizeof (truenas_xattr_setattr_t) == 144,
+	"truenas_xattr_setattr_t is part of the ABI");
+
+#define	ZPL_SETATTR_KNOWN	(TRUENAS_SETATTR_MODE | TRUENAS_SETATTR_UID | \
+	TRUENAS_SETATTR_GID | TRUENAS_SETATTR_ATIME | TRUENAS_SETATTR_MTIME | \
+	TRUENAS_SETATTR_BTIME | TRUENAS_SETATTR_DOSFLAGS)
+
+/* The DOS attributes that write attributes from the ACL may change. */
+#define	ZPL_SETATTR_DOS_ATTRS	(ZFS_READONLY | ZFS_HIDDEN | ZFS_SYSTEM | \
+	ZFS_ARCHIVE | ZFS_OFFLINE | ZFS_SPARSE)
+
+static int
+__zpl_xattr_setattr_list(struct inode *ip, char *list, size_t list_size,
+    const char *name, size_t name_len)
+{
+	return (0);
+}
+ZPL_XATTR_LIST_WRAPPER(zpl_xattr_setattr_list);
+
+static boolean_t
+zpl_xattr_setattr_nsec_valid(int64_t nsec)
+{
+	return (nsec == UTIME_NOW || nsec == UTIME_OMIT ||
+	    (nsec >= 0 && nsec < NSEC_PER_SEC));
+}
+
+/*
+ * As ZFS decides on illumos, readonly, hidden, system, archive, offline and
+ * sparse need write attributes from the ACL or the owner. The others need
+ * the owner, as ZFS_IOC_SETDOSFLAGS asks, and immutable and appendonly
+ * also need CAP_LINUX_IMMUTABLE whether or not they would change. Only an
+ * NFSv4 ACL that is not trivial grants write attributes to anyone but the
+ * owner. A trivial one grants it to owner@ alone, though
+ * zfs_zaccess_trivial() would take write permission for it, and under any
+ * other acltype ZFS grants every ACE mask and leaves the checks to the VFS.
+ */
+static int
+zpl_xattr_setattr_dos_check(struct mnt_idmap *idmap, struct inode *ip,
+    uint64_t dos)
+{
+	znode_t *zp = ITOZ(ip);
+	zfsvfs_t *zfsvfs = ZTOZSB(zp);
+	int error;
+
+	if ((dos & (ZFS_IMMUTABLE | ZFS_APPENDONLY)) &&
+	    !capable(CAP_LINUX_IMMUTABLE))
+		return (-EPERM);
+
+	if (zpl_inode_owner_or_capable(idmap, ip))
+		return (0);
+
+	if ((dos & ~ZPL_SETATTR_DOS_ATTRS) != 0 ||
+	    zfsvfs->z_acl_type != ZFS_ACLTYPE_NFSV4 ||
+	    (zp->z_pflags & ZFS_ACL_TRIVIAL))
+		return (-EPERM);
+
+	/* As in zpl_permission(), the ACL is checked through the idmap. */
+	if ((error = zfs_enter_verify_zp(zfsvfs, zp, FTAG)) != 0)
+		return (-error);
+	error = zfs_zaccess(zp, ACE_WRITE_ATTRIBUTES, V_ACE_MASK, B_FALSE,
+	    CRED(), idmap);
+	zfs_exit(zfsvfs, FTAG);
+
+	return (error ? -EPERM : 0);
+}
+
+static int
+zpl_xattr_setattr_set(const struct xattr_handler *handler,
+    struct mnt_idmap *idmap, struct dentry *dentry, struct inode *ip,
+    const char *name, const void *value, size_t size, int flags)
+{
+	const truenas_xattr_setattr_t *sa = value;
+	zpl_setattr_extra_t extra = { .zse_ip = ip };
+	struct iattr ia = { .ia_valid = ATTR_CTIME };
+	int64_t atime = UTIME_OMIT, mtime = UTIME_OMIT, btime = UTIME_OMIT;
+	uint64_t valid;
+	int i, error;
+
+	if (value == NULL || size < sizeof (*sa) || flags != 0)
+		return (-EINVAL);
+
+	valid = sa->zsa_valid;
+	if (sa->zsa_version != TRUENAS_XATTR_SETATTR_VERSION ||
+	    sa->zsa_hdrsize != sizeof (*sa) || sa->zsa_flags != 0 ||
+	    size != sizeof (*sa) + sa->zsa_acl_len || valid == 0 ||
+	    ((valid & TRUENAS_SETATTR_ACL) != 0) != (sa->zsa_acl_len != 0))
+		return (-EINVAL);
+	for (i = 0; i < ARRAY_SIZE(sa->zsa_reserved); i++) {
+		if (sa->zsa_reserved[i] != 0)
+			return (-EINVAL);
+	}
+
+	/* The ACL is not taken yet, so a program can probe for it. */
+	if (valid & ~ZPL_SETATTR_KNOWN)
+		return (-EOPNOTSUPP);
+
+	if (valid & TRUENAS_SETATTR_MODE) {
+		if ((sa->zsa_mode & ~S_IALLUGO) || sa->zsa_mode_mask == 0 ||
+		    (sa->zsa_mode_mask & ~S_IALLUGO))
+			return (-EINVAL);
+		ia.ia_mode = (ip->i_mode & ~sa->zsa_mode_mask) |
+		    (sa->zsa_mode & sa->zsa_mode_mask);
+		ia.ia_valid |= ATTR_MODE;
+	}
+
+	if (valid & TRUENAS_SETATTR_UID) {
+		kuid_t uid = make_kuid(current_user_ns(), sa->zsa_uid);
+
+		if (!uid_valid(uid))
+			return (-EINVAL);
+		ia.ia_vfsuid = VFSUIDT_INIT(uid);
+		ia.ia_valid |= ATTR_UID;
+	}
+
+	if (valid & TRUENAS_SETATTR_GID) {
+		kgid_t gid = make_kgid(current_user_ns(), sa->zsa_gid);
+
+		if (!gid_valid(gid))
+			return (-EINVAL);
+		ia.ia_vfsgid = VFSGIDT_INIT(gid);
+		ia.ia_valid |= ATTR_GID;
+	}
+
+	/*
+	 * As nfsd_sanitize_attrs() does, a new owner or group of what is not
+	 * a folder loses set-user-ID, and set-group-ID when group execute is
+	 * set. notify_change() refuses ATTR_MODE beside ATTR_KILL_SUID or
+	 * ATTR_KILL_SGID, so with a mode the bits are cleared here.
+	 */
+	if ((ia.ia_valid & (ATTR_UID | ATTR_GID)) && !S_ISDIR(ip->i_mode)) {
+		ia.ia_valid |= ATTR_KILL_PRIV;
+		if (ia.ia_valid & ATTR_MODE) {
+			ia.ia_mode &= ~S_ISUID;
+			if (ia.ia_mode & S_IXGRP)
+				ia.ia_mode &= ~S_ISGID;
+		} else {
+			ia.ia_valid |= ATTR_KILL_SUID |
+			    setattr_should_drop_sgid(idmap, ip);
+		}
+	}
+
+	if (valid & TRUENAS_SETATTR_ATIME)
+		atime = sa->zsa_atime.zt_nsec;
+	if (valid & TRUENAS_SETATTR_MTIME)
+		mtime = sa->zsa_mtime.zt_nsec;
+	if (valid & TRUENAS_SETATTR_BTIME)
+		btime = sa->zsa_btime.zt_nsec;
+	if (!zpl_xattr_setattr_nsec_valid(atime) ||
+	    !zpl_xattr_setattr_nsec_valid(mtime) ||
+	    !zpl_xattr_setattr_nsec_valid(btime))
+		return (-EINVAL);
+
+	if (atime == UTIME_NOW && mtime == UTIME_NOW && btime == UTIME_OMIT) {
+		ia.ia_valid |= ATTR_ATIME | ATTR_MTIME | ATTR_TOUCH;
+	} else if (atime != UTIME_OMIT || mtime != UTIME_OMIT ||
+	    btime != UTIME_OMIT) {
+		if (atime != UTIME_OMIT)
+			ia.ia_valid |= ATTR_ATIME;
+		if (atime != UTIME_OMIT && atime != UTIME_NOW) {
+			ia.ia_atime.tv_sec = sa->zsa_atime.zt_sec;
+			ia.ia_atime.tv_nsec = atime;
+			ia.ia_valid |= ATTR_ATIME_SET;
+		}
+		if (mtime != UTIME_OMIT)
+			ia.ia_valid |= ATTR_MTIME;
+		if (mtime != UTIME_OMIT && mtime != UTIME_NOW) {
+			ia.ia_mtime.tv_sec = sa->zsa_mtime.zt_sec;
+			ia.ia_mtime.tv_nsec = mtime;
+			ia.ia_valid |= ATTR_MTIME_SET;
+		}
+		/* A birth time is never a mere touch, so it needs the owner. */
+		ia.ia_valid |= ATTR_TIMES_SET;
+	}
+
+	if (btime == UTIME_NOW) {
+		extra.zse_btime = current_time(ip);
+		extra.zse_valid |= TRUENAS_SETATTR_BTIME;
+	} else if (btime != UTIME_OMIT) {
+		extra.zse_btime.tv_sec = sa->zsa_btime.zt_sec;
+		extra.zse_btime.tv_nsec = btime;
+		extra.zse_valid |= TRUENAS_SETATTR_BTIME;
+	}
+
+	if (valid & TRUENAS_SETATTR_DOSFLAGS) {
+		uint64_t dos = sa->zsa_dos_set | sa->zsa_dos_clear;
+
+		if (dos == 0 || (sa->zsa_dos_set & sa->zsa_dos_clear))
+			return (-EINVAL);
+		if (dos & ~ZFS_DOS_FL_USER_VISIBLE)
+			return (-EOPNOTSUPP);
+		error = zpl_xattr_setattr_dos_check(idmap, ip, dos);
+		if (error)
+			return (error);
+		extra.zse_dos_set = sa->zsa_dos_set;
+		extra.zse_dos_clear = sa->zsa_dos_clear;
+		extra.zse_valid |= TRUENAS_SETATTR_DOSFLAGS;
+	}
+
+	/* As utimensat(2) does with UTIME_OMIT alone, change nothing. */
+	if (ia.ia_valid == ATTR_CTIME && extra.zse_valid == 0)
+		return (0);
+
+	if (extra.zse_valid == 0)
+		return (notify_change(idmap, dentry, &ia, NULL));
+
+	error = tsd_set(zpl_setattr_extra_key, &extra);
+	if (error)
+		return (-error);
+	error = notify_change(idmap, dentry, &ia, NULL);
+	(void) tsd_set(zpl_setattr_extra_key, NULL);
+	return (error);
+}
+
+static xattr_handler_t zpl_xattr_setattr_handler =
+{
+	.name	= TRUENAS_XATTR_SETATTR,
+	.list	= zpl_xattr_setattr_list,
+	.set	= zpl_xattr_setattr_set,
+};
+#endif /* HAVE_XATTR_SET_IDMAP */
+
 xattr_handler_t *zpl_xattr_handlers[] = {
 	&zpl_xattr_security_handler,
 	&zpl_xattr_trusted_handler,
@@ -1934,6 +2179,9 @@ xattr_handler_t *zpl_xattr_handlers[] = {
 	&zpl_xattr_acl_default_handler,
 #endif /* CONFIG_FS_POSIX_ACL */
 	&zpl_xattr_nfs41acl_handler,
+#ifdef HAVE_XATTR_SET_IDMAP
+	&zpl_xattr_setattr_handler,
+#endif
 	NULL
 };
 
@@ -1965,6 +2213,12 @@ zpl_xattr_handler(const char *name)
 	if (strncmp(name, NFS41ACL_XATTR,
 	    sizeof (NFS41ACL_XATTR)) == 0)
 		return (&zpl_xattr_nfs41acl_handler);
+
+#ifdef HAVE_XATTR_SET_IDMAP
+	if (strncmp(name, TRUENAS_XATTR_SETATTR,
+	    sizeof (TRUENAS_XATTR_SETATTR)) == 0)
+		return (&zpl_xattr_setattr_handler);
+#endif
 
 	return (NULL);
 }
