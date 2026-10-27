@@ -520,8 +520,10 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 		 * to prevent knfsd from generating the change cookie
 		 * based on ctime. C.f. nfsd4_change_attribute in
 		 * fs/nfsd/nfsfh.c.
+		 *
+		 * zfs_getattr_fast() has already read z_seq into
+		 * stat->change_cookie under z_lock, with the attributes.
 		 */
-		stat->change_cookie = atomic_load_64(&zp->z_seq);
 		stat->attributes |= STATX_ATTR_CHANGE_MONOTONIC;
 		stat->result_mask |= STATX_CHANGE_COOKIE;
 	}

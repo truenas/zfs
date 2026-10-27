@@ -1810,6 +1810,16 @@ zfs_getattr_fast(zidmap_t *user_ns, struct inode *ip, struct kstat *sp)
 		sp->blksize = zfsvfs->z_max_blksz;
 	}
 
+#ifdef STATX_CHANGE_COOKIE
+	/*
+	 * Read the change cookie here, under z_lock and the teardown lock.
+	 * setattr, ACL changes and link/unlink store their changes and
+	 * bump z_seq under z_lock, so the cookie returned always matches
+	 * the attributes returned with it.  zpl_getattr_impl() reports it.
+	 */
+	sp->change_cookie = atomic_load_64(&zp->z_seq);
+#endif
+
 	mutex_exit(&zp->z_lock);
 
 #ifdef STATX_BTIME
