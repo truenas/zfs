@@ -51,6 +51,15 @@
 #include <sys/dsl_dataset.h>
 #include <sys/fs/zfs.h>
 
+/*
+ * Number of zinject handlers registered on the system, incremented and
+ * decremented atomically so that it can be read without inject_lock held.
+ *
+ * Each injection hook below short circuits on this before touching
+ * inject_lock, so callers do not need to test it themselves. inject_lock
+ * is a single global rwlock and some hooks run for every zio, so taking
+ * it even as a reader bounces its cache line between all CPUs.
+ */
 uint32_t zio_injection_enabled = 0;
 
 /*
@@ -84,13 +93,11 @@ static list_t inject_handlers;
 static krwlock_t inject_lock;
 
 /*
- * This holds the number of zinject delay handlers that have been
- * registered on the system. It is protected by the inject_lock defined
- * above. Thus modifications to this count must be a RW_WRITER of the
- * inject_lock, and reads of this count must be (at least) a RW_READER
- * of the lock.
+ * Number of registered zinject delay handlers. Modified only under
+ * inject_lock as RW_WRITER, but like zio_injection_enabled it may be read
+ * without the lock; a read used to then walk the list must still take it.
  */
-static int inject_delay_count = 0;
+static uint32_t inject_delay_count = 0;
 
 /*
  * This lock is used only in zio_handle_io_delay(), refer to the comment
@@ -181,6 +188,9 @@ zio_handle_panic_injection(spa_t *spa, const char *tag, uint64_t type)
 {
 	inject_handler_t *handler;
 
+	if (likely(zio_injection_enabled == 0))
+		return;
+
 	rw_enter(&inject_lock, RW_READER);
 
 	for (handler = list_head(&inject_handlers); handler != NULL;
@@ -210,6 +220,9 @@ zio_handle_decrypt_injection(spa_t *spa, const zbookmark_phys_t *zb,
 {
 	int ret = 0;
 	inject_handler_t *handler;
+
+	if (likely(zio_injection_enabled == 0))
+		return (0);
 
 	rw_enter(&inject_lock, RW_READER);
 
@@ -272,6 +285,9 @@ zio_handle_fault_injection(zio_t *zio, int error)
 	int ret = 0;
 	inject_handler_t *handler;
 
+	if (likely(zio_injection_enabled == 0))
+		return (0);
+
 	/*
 	 * Ignore I/O not associated with any logical data.
 	 */
@@ -326,6 +342,9 @@ zio_handle_label_injection(zio_t *zio, int error)
 	uint64_t offset = zio->io_offset;
 	int label;
 	int ret = 0;
+
+	if (likely(zio_injection_enabled == 0))
+		return (0);
 
 	if (offset >= VDEV_LABEL_START_SIZE &&
 	    offset < vd->vdev_psize - VDEV_LABEL_END_SIZE)
@@ -407,6 +426,9 @@ zio_handle_device_injection_impl(vdev_t *vd, zio_t *zio, int err1, int err2)
 {
 	inject_handler_t *handler;
 	int ret = 0;
+
+	if (likely(zio_injection_enabled == 0))
+		return (0);
 
 	/*
 	 * We skip over faults in the labels unless it's during device open
@@ -523,6 +545,9 @@ zio_handle_ignored_writes(zio_t *zio)
 {
 	inject_handler_t *handler;
 
+	if (likely(zio_injection_enabled == 0))
+		return;
+
 	rw_enter(&inject_lock, RW_READER);
 
 	for (handler = list_head(&inject_handlers); handler != NULL;
@@ -562,7 +587,7 @@ spa_handle_ignored_writes(spa_t *spa)
 {
 	inject_handler_t *handler;
 
-	if (zio_injection_enabled == 0)
+	if (likely(zio_injection_enabled == 0))
 		return;
 
 	rw_enter(&inject_lock, RW_READER);
@@ -602,6 +627,10 @@ zio_handle_io_delay(zio_t *zio)
 	inject_handler_t *min_handler = NULL;
 	hrtime_t min_target = 0;
 
+	/* Zero tells zio_delay_interrupt() not to delay this zio. */
+	if (likely(inject_delay_count == 0))
+		return (0);
+
 	rw_enter(&inject_lock, RW_READER);
 
 	/*
@@ -612,18 +641,6 @@ zio_handle_io_delay(zio_t *zio)
 	 */
 	IMPLY(inject_delay_count > 0, zio_injection_enabled > 0);
 	IMPLY(zio_injection_enabled == 0, inject_delay_count == 0);
-
-	/*
-	 * If there aren't any inject delay handlers registered, then we
-	 * can short circuit and simply return 0 here. A value of zero
-	 * informs zio_delay_interrupt() that this request should not be
-	 * delayed. This short circuit keeps us from acquiring the
-	 * inject_delay_mutex unnecessarily.
-	 */
-	if (inject_delay_count == 0) {
-		rw_exit(&inject_lock);
-		return (0);
-	}
 
 	/*
 	 * Each inject handler has a number of "lanes" associated with
@@ -775,6 +792,9 @@ zio_handle_pool_delay(spa_t *spa, hrtime_t elapsed, zinject_type_t command)
 	hrtime_t delay = 0;
 	int id = 0;
 
+	if (likely(zio_injection_enabled == 0))
+		return;
+
 	rw_enter(&inject_lock, RW_READER);
 
 	for (handler = list_head(&inject_handlers);
@@ -836,6 +856,9 @@ zio_handle_ready_delay(zio_t *zio)
 	inject_handler_t *handler;
 	hrtime_t now = gethrtime();
 	hrtime_t target = 0;
+
+	if (likely(zio_injection_enabled == 0))
+		return (0);
 
 	/*
 	 * Ignore I/O not associated with any logical data.
@@ -1055,11 +1078,8 @@ zio_inject_fault(char *name, int flags, int *id, zinject_record_t *record)
 		 * inject_lock, and we don't want to hold that while
 		 * allocating the handler's zi_lanes array.
 		 */
-		if (handler->zi_record.zi_cmd == ZINJECT_DELAY_IO) {
-			ASSERT3S(inject_delay_count, >=, 0);
-			inject_delay_count++;
-			ASSERT3S(inject_delay_count, >, 0);
-		}
+		if (handler->zi_record.zi_cmd == ZINJECT_DELAY_IO)
+			atomic_inc_32(&inject_delay_count);
 
 		*id = handler->zi_id = inject_next_id++;
 		list_insert_tail(&inject_handlers, handler);
@@ -1144,9 +1164,8 @@ zio_clear_fault(int id)
 	}
 
 	if (handler->zi_record.zi_cmd == ZINJECT_DELAY_IO) {
-		ASSERT3S(inject_delay_count, >, 0);
-		inject_delay_count--;
-		ASSERT3S(inject_delay_count, >=, 0);
+		ASSERT3U(inject_delay_count, >, 0);
+		atomic_dec_32(&inject_delay_count);
 	}
 
 	list_remove(&inject_handlers, handler);
