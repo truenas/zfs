@@ -2101,8 +2101,23 @@ zpl_xattr_setattr_set(const struct xattr_handler *handler,
 	    !zpl_xattr_setattr_nsec_valid(btime))
 		return (-EINVAL);
 
-	if (atime == UTIME_NOW && mtime == UTIME_NOW && btime == UTIME_OMIT) {
-		ia.ia_valid |= ATTR_ATIME | ATTR_MTIME | ATTR_TOUCH;
+	/*
+	 * A call that sets atime, mtime or both to the current time, and no
+	 * other time, is a touch. Anyone who may write the file, or has write
+	 * attributes in its NFSv4 ACL, may do that (see may_setattr()). This
+	 * matches nfsd_setattr(), while utimensat(2) asks for the owner when
+	 * only one of the two times is set. Any other time, or a birth time,
+	 * still needs the owner.
+	 */
+	if ((atime == UTIME_NOW || mtime == UTIME_NOW) &&
+	    (atime == UTIME_NOW || atime == UTIME_OMIT) &&
+	    (mtime == UTIME_NOW || mtime == UTIME_OMIT) &&
+	    btime == UTIME_OMIT) {
+		if (atime == UTIME_NOW)
+			ia.ia_valid |= ATTR_ATIME;
+		if (mtime == UTIME_NOW)
+			ia.ia_valid |= ATTR_MTIME;
+		ia.ia_valid |= ATTR_TOUCH;
 	} else if (atime != UTIME_OMIT || mtime != UTIME_OMIT ||
 	    btime != UTIME_OMIT) {
 		if (atime != UTIME_OMIT)

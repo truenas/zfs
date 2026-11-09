@@ -1720,8 +1720,12 @@ typedef enum zfs_ioc {
  * mtime, birth time and DOS attributes in one call and one transaction.
  * The value is a truenas_xattr_setattr_t whose zsa_valid names the fields
  * that apply. The checks are those of chmod(2), chown(2) and utimensat(2),
- * run as the caller, and a birth time needs the owner. Each nsec field may
- * be UTIME_NOW or UTIME_OMIT with the meaning they have for utimensat(2).
+ * run as the caller, with one difference. A call that sets atime, mtime or
+ * both to UTIME_NOW, and no other time, is allowed to anyone who may write
+ * the file or has write attributes in its NFSv4 ACL, while utimensat(2)
+ * asks for the owner when only one of the two is set. Any other time, and
+ * a birth time, needs the owner. Each nsec field may be UTIME_NOW, for the
+ * current time, or UTIME_OMIT, to leave that time unchanged.
  * The DOS attributes are those of ZFS_IOC_SETDOSFLAGS, given as bits to set
  * and bits to clear so that no other bit is read and written back.
  * readonly, hidden, system, archive, offline and sparse need write
